@@ -79,7 +79,7 @@ def _open_target(remote: str, token: str = "", rel: str = "", refresh: bool = Fa
             "Para borrar de verdad en Netlify sin pegar tokens en el panel: "
             "1) Descarga 'Agente Netlify'  "
             "2) Guárdalo como netlify/functions/oal-clean.js en TU proyecto  "
-            "3) En Netlify → Environment variables crea NETLIFY_AUTH_TOKEN (una vez en Netlify, no aquí)  "
+            "3) En Netlify -> Environment variables crea NETLIFY_AUTH_TOKEN (una vez en Netlify, no aqui)  "
             "4) Publica y Conecta solo con la URL. "
             f"Detalle: {agent_error}"
         )

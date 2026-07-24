@@ -173,11 +173,15 @@ def _with_first_working_agent(
             continue
 
     host = urllib.parse.urlparse(remote_url).netloc
+    host_l = (host or "").lower()
+    if host_l.endswith(".netlify.app") or host_l.endswith(".netlify.com"):
+        raise RuntimeError(
+            f"No hay agente Netlify en {host}. "
+            "Instala netlify/functions/oal-clean.js y publica el sitio."
+        )
     raise RuntimeError(
         f"No se pudo conectar a {host or remote_url}. "
-        "File Clear solo gestiona sitios donde tú puedes instalar el endpoint "
-        "(tu XAMPP/ngrok/hosting), no apps de terceros como WhatsApp. "
-        "En tu sitio coloca oal_agent.php + oal-lab-clean y vuelve a conectar."
+        "Sube oal_agent.php al sitio (PHP) o el Agente Netlify si es .netlify.app."
     )
 
 
