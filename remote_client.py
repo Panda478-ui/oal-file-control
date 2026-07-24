@@ -1,4 +1,4 @@
-"""Cliente/proxy para agentes File Clear en cualquier dominio."""
+"""Cliente/proxy para agentes File Clear en sitios que tú controlas."""
 
 from __future__ import annotations
 
@@ -20,11 +20,6 @@ def _join_url(scheme: str, netloc: str, path: str) -> str:
 def candidate_agent_urls(raw: str) -> List[str]:
     """
     Genera posibles URLs del agente a partir de cualquier enlace del sitio.
-    Ejemplos:
-      https://host/lab_sys/index.php
-      https://host/lab_sys/
-      https://host/
-      https://host/lab_sys/oal_agent.php
     """
     value = (raw or "").strip()
     if not value:
@@ -44,26 +39,46 @@ def candidate_agent_urls(raw: str) -> List[str]:
         if url not in candidates:
             candidates.append(url)
 
-    if lower.endswith("oal_agent.php"):
+    agent_names = ("oal_agent.php", "oal-lab-clean.php", "file_clear.php")
+
+    if any(lower.endswith(name) for name in agent_names):
         add(path if path.startswith("/") else "/" + path)
-    else:
-        if lower.endswith(".php") or lower.endswith(".html") or lower.endswith(".htm"):
-            parts = parts[:-1]
-        # carpeta actual
-        base = "/" + "/".join(parts) if parts else ""
-        add((base + "/oal_agent.php") if base else "/oal_agent.php")
-        # subir un nivel (por si pegaron una subruta)
-        if len(parts) >= 1:
-            parent = "/" + "/".join(parts[:-1]) if len(parts) > 1 else ""
-            add((parent + "/oal_agent.php") if parent else "/oal_agent.php")
-        # raíz del dominio
-        add("/oal_agent.php")
+        return candidates
+
+    if lower.endswith(".php") or lower.endswith(".html") or lower.endswith(".htm"):
+        parts = parts[:-1]
+
+    bases = []
+    base = "/" + "/".join(parts) if parts else ""
+    bases.append(base)
+    if len(parts) >= 1:
+        parent = "/" + "/".join(parts[:-1]) if len(parts) > 1 else ""
+        bases.append(parent)
+    bases.append("")
+
+    for folder in bases:
+        for name in agent_names:
+            add((folder + "/" + name) if folder else "/" + name)
 
     return candidates
 
 
 def normalize_remote_url(raw: str) -> str:
-    return candidate_agent_urls(raw)[0]
+    return (raw or "").strip()
+
+
+def _looks_like_agent_payload(parsed: Any) -> bool:
+    if not isinstance(parsed, dict):
+        return False
+    if "files" in parsed and isinstance(parsed.get("files"), list):
+        return True
+    if parsed.get("ok") and parsed.get("agent"):
+        return True
+    if "deleted" in parsed or "errors" in parsed:
+        return True
+    if "error" in parsed:
+        return True
+    return False
 
 
 def _request(
@@ -90,10 +105,27 @@ def _request(
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
+            content_type = (resp.headers.get("Content-Type") or "").lower()
             raw = resp.read().decode("utf-8", errors="replace")
-            parsed = json.loads(raw) if raw else {}
-            if not isinstance(parsed, dict):
-                raise ValueError("Respuesta remota inválida")
+            stripped = raw.lstrip()
+            if (
+                "html" in content_type
+                or stripped.lower().startswith("<!doctype")
+                or stripped.lower().startswith("<html")
+            ):
+                raise RuntimeError(
+                    "El sitio respondió HTML (no es un endpoint File Clear)."
+                )
+            try:
+                parsed = json.loads(raw) if raw else {}
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    "Respuesta no JSON (ese dominio no expone File Clear)."
+                ) from exc
+            if not _looks_like_agent_payload(parsed):
+                raise RuntimeError("Respuesta remota no reconocida como File Clear.")
+            if isinstance(parsed, dict) and parsed.get("error") and "files" not in parsed:
+                raise RuntimeError(str(parsed["error"]))
             return parsed
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
@@ -101,10 +133,13 @@ def _request(
             parsed = json.loads(detail)
             message = parsed.get("error") or detail
         except Exception:
-            message = detail or str(exc)
-        raise RuntimeError(f"Remoto HTTP {exc.code}: {message}") from exc
+            if detail.lstrip().lower().startswith("<!"):
+                message = "HTML en lugar de JSON"
+            else:
+                message = detail or str(exc)
+        raise RuntimeError(f"HTTP {exc.code}: {message}") from exc
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"No se pudo contactar el origen remoto: {exc.reason}") from exc
+        raise RuntimeError(f"No se pudo contactar el origen: {exc.reason}") from exc
 
 
 def _with_first_working_agent(
@@ -121,12 +156,15 @@ def _with_first_working_agent(
                 result["remote_url"] = remote_url
             return result
         except Exception as exc:
-            errors.append(f"{agent} -> {exc}")
+            errors.append(f"{agent}: {exc}")
             continue
+
+    host = urllib.parse.urlparse(remote_url).netloc
     raise RuntimeError(
-        "No se encontró oal_agent.php en ese dominio. "
-        "Sube oal_agent.php y el archivo oal-lab-clean a la carpeta del sitio. "
-        + " | ".join(errors[:3])
+        f"No se pudo conectar a {host or remote_url}. "
+        "File Clear solo gestiona sitios donde tú puedes instalar el endpoint "
+        "(tu XAMPP/ngrok/hosting), no apps de terceros como WhatsApp. "
+        "En tu sitio coloca oal_agent.php + oal-lab-clean y vuelve a conectar."
     )
 
 

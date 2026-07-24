@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from delete_files import delete_selected_files, list_project_files
+from local_site import resolve_site_root_from_url
 from remote_client import (
     DEFAULT_TOKEN,
     normalize_remote_url,
@@ -375,24 +376,19 @@ PAGE = r"""<!DOCTYPE html>
   <div class="frame">
     <div class="brand-mark">Panel central</div>
     <h1 class="brand">File <em>Clear</em></h1>
-    <p class="lede">Pega una URL externa (por ejemplo un sitio en ngrok con <code>oal_agent.php</code>) y limpia basura navegando carpetas y archivos.</p>
 
     <section class="connect">
       <label for="apiUrl">URL externa o local</label>
       <div class="connect-row">
-        <input id="apiUrl" type="url" placeholder="https://tu-sitio.ngrok-free.dev/lab_sys/index.php">
+        <input id="apiUrl" type="url" placeholder="https://tu-sitio.ngrok-free.dev/lab_sys/">
         <button type="button" class="secondary" id="btnConnect">Conectar</button>
         <button type="button" class="secondary" id="btnThis">Storage local</button>
       </div>
       <div class="connect-row" style="grid-template-columns: 1fr auto auto;">
-        <input id="apiToken" type="text" placeholder="Clave / archivo oal-lab-clean" value="oal-lab-clean">
+        <input id="apiToken" type="text" placeholder="Clave oal-lab-clean" value="oal-lab-clean">
         <a class="secondary" id="btnAgent" href="/agents/oal_agent.php" download="oal_agent.php" style="text-decoration:none;display:inline-flex;align-items:center;">Agente PHP</a>
         <a class="secondary" href="/agents/oal-lab-clean" download="oal-lab-clean" style="text-decoration:none;display:inline-flex;align-items:center;">Clave</a>
       </div>
-      <p class="hint">
-        Panel: <a href="https://oal-file-control.onrender.com" target="_blank" rel="noopener">oal-file-control.onrender.com</a>.
-        En cualquier dominio (local o externo) sube <code>oal_agent.php</code> y el archivo <code>oal-lab-clean</code> a la carpeta del sitio, luego pega la URL y conecta.
-      </p>
     </section>
 
     <section class="panel">
@@ -619,7 +615,7 @@ PAGE = r"""<!DOCTYPE html>
         files = [];
         renderList();
         metaEl.textContent = "No se pudo leer el origen";
-        setStatus(err.message || "Error de conexión. ¿Subiste oal_agent.php al sitio remoto?", "err");
+        setStatus(err.message || "No se pudo conectar a esa URL.", "err");
       }
     }
 
@@ -819,7 +815,19 @@ class AppHandler(BaseHTTPRequestHandler):
             remote = (query.get("remote") or [""])[0]
             token = (query.get("token") or [AGENT_TOKEN])[0] or AGENT_TOKEN
             try:
-                self._send_json(200, remote_ping(remote, token))
+                local_root = resolve_site_root_from_url(remote)
+                if local_root is not None:
+                    self._send_json(
+                        200,
+                        {
+                            "ok": True,
+                            "agent": "local-disk",
+                            "root": str(local_root),
+                            "remote_url": remote,
+                        },
+                    )
+                else:
+                    self._send_json(200, remote_ping(remote, token))
             except Exception as exc:
                 self._send_json(400, {"error": str(exc)})
             return
@@ -830,7 +838,14 @@ class AppHandler(BaseHTTPRequestHandler):
             token = (query.get("token") or [AGENT_TOKEN])[0] or AGENT_TOKEN
             try:
                 if remote:
-                    self._send_json(200, remote_list_files(remote, rel, token))
+                    local_root = resolve_site_root_from_url(remote)
+                    if local_root is not None:
+                        data = list_project_files(local_root, rel)
+                        data["remote_url"] = remote
+                        data["agent_url"] = "local-disk"
+                        self._send_json(200, data)
+                    else:
+                        self._send_json(200, remote_list_files(remote, rel, token))
                 else:
                     self._send_json(200, list_project_files(BASE_DIR, rel))
             except FileNotFoundError as exc:
@@ -855,7 +870,11 @@ class AppHandler(BaseHTTPRequestHandler):
                 return
             try:
                 if remote:
-                    result = remote_delete_files(remote, names, str(current or ""), token)
+                    local_root = resolve_site_root_from_url(remote)
+                    if local_root is not None:
+                        result = delete_selected_files(names, local_root, str(current or ""))
+                    else:
+                        result = remote_delete_files(remote, names, str(current or ""), token)
                 else:
                     result = delete_selected_files(names, BASE_DIR, str(current or ""))
             except Exception as exc:
