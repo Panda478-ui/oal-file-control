@@ -224,8 +224,35 @@ PAGE = r"""<!DOCTYPE html>
       background: rgba(196,165,116,0.07);
       box-shadow: inset 3px 0 0 var(--accent);
     }
-    .row.folder { cursor: pointer; }
+    .row.folder { cursor: default; }
     .row.folder:hover { background: rgba(255,255,255,0.03); }
+    .row.folder.is-selected {
+      background: rgba(196,165,116,0.07);
+      box-shadow: inset 3px 0 0 var(--accent);
+    }
+    .open-btn {
+      border: 1px solid var(--line);
+      background: transparent;
+      color: var(--text);
+      border-radius: 3px;
+      padding: 0.35rem 0.65rem;
+      font: 600 0.78rem "Instrument Sans", sans-serif;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .open-btn:hover {
+      border-color: rgba(196,165,116,0.45);
+      color: var(--accent);
+    }
+    .folder-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+    }
+    .tool:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
     .row.is-protected { opacity: 0.48; cursor: not-allowed; }
     .check {
       width: 1.05rem;
@@ -374,10 +401,10 @@ PAGE = r"""<!DOCTYPE html>
           <div class="crumbs" id="crumbs"></div>
         </div>
         <div class="tools">
-          <button type="button" class="tool" id="btnUp">Subir</button>
+          <button type="button" class="tool" id="btnBack">Regresar</button>
           <button type="button" class="tool" id="btnRefresh">Actualizar</button>
-          <button type="button" class="tool" id="btnAll">Seleccionar archivos</button>
-          <button type="button" class="tool" id="btnNone">Limpiar</button>
+          <button type="button" class="tool" id="btnAll">Seleccionar todo</button>
+          <button type="button" class="tool" id="btnNone">Limpiar selección</button>
         </div>
       </div>
       <div class="file-list" id="fileList" role="list"></div>
@@ -454,6 +481,24 @@ PAGE = r"""<!DOCTYPE html>
       const n = selected.size;
       btnDelete.disabled = n === 0;
       btnDelete.textContent = n ? `Eliminar seleccionados (${n})` : "Eliminar seleccionados";
+      const btnBack = document.getElementById("btnBack");
+      if (btnBack) btnBack.disabled = !currentPath;
+    }
+
+    function toggleSelected(key) {
+      if (selected.has(key)) selected.delete(key);
+      else selected.add(key);
+      renderList();
+      setStatus("");
+    }
+
+    function goBack() {
+      if (!currentPath) return;
+      const parts = currentPath.split("/").filter(Boolean);
+      parts.pop();
+      currentPath = parts.join("/");
+      localStorage.setItem("oal_current_path", currentPath);
+      loadFiles();
     }
 
     function renderCrumbs(items) {
@@ -481,18 +526,35 @@ PAGE = r"""<!DOCTYPE html>
       }
 
       folders.forEach((folder, index) => {
+        const key = folder.path || folder.name;
         const row = document.createElement("div");
         row.className = "row folder";
         row.style.animationDelay = `${Math.min(index * 0.03, 0.25)}s`;
+        if (selected.has(key)) row.classList.add("is-selected");
+
         row.innerHTML = `
-          <span class="folder-icon" aria-hidden="true"></span>
+          <span class="check" aria-hidden="true">
+            <svg viewBox="0 0 16 16" fill="none">
+              <path d="M3.5 8.2 6.4 11l6.1-6.4" stroke="#1a140c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </span>
           <span>
             <div class="name">${escapeHtml(folder.name)}</div>
-            <div class="sub">Abrir carpeta</div>
+            <div class="sub">Carpeta completa · marcar para borrar todo su contenido</div>
           </span>
-          <span class="ext dir">carpeta</span>
+          <span class="folder-actions">
+            <button type="button" class="open-btn">Abrir</button>
+            <span class="ext dir">carpeta</span>
+          </span>
         `;
-        row.addEventListener("click", () => {
+
+        row.querySelector(".check").addEventListener("click", (event) => {
+          event.stopPropagation();
+          toggleSelected(key);
+        });
+        row.querySelector(".name").parentElement.addEventListener("click", () => toggleSelected(key));
+        row.querySelector(".open-btn").addEventListener("click", (event) => {
+          event.stopPropagation();
           currentPath = folder.path;
           localStorage.setItem("oal_current_path", currentPath);
           loadFiles();
@@ -523,13 +585,7 @@ PAGE = r"""<!DOCTYPE html>
         `;
 
         if (!file.protected) {
-          row.addEventListener("click", () => {
-            const key = file.path || file.name;
-            if (selected.has(key)) selected.delete(key);
-            else selected.add(key);
-            renderList();
-            setStatus("");
-          });
+          row.addEventListener("click", () => toggleSelected(file.path || file.name));
         }
         fileListEl.appendChild(row);
       });
@@ -581,8 +637,8 @@ PAGE = r"""<!DOCTYPE html>
       const names = [...selected];
       if (!names.length) return;
       modalText.textContent = remoteUrl
-        ? `Se eliminarán ${names.length} archivo(s) del sitio remoto.`
-        : `Se eliminarán ${names.length} archivo(s) del storage local.`;
+        ? `Se eliminarán ${names.length} elemento(s) del sitio remoto (archivos y/o carpetas completas).`
+        : `Se eliminarán ${names.length} elemento(s) del storage local (archivos y/o carpetas completas).`;
       modalList.innerHTML = names.map((name) => escapeHtml(name)).join("<br>");
       modal.hidden = false;
       btnConfirm.focus();
@@ -629,21 +685,17 @@ PAGE = r"""<!DOCTYPE html>
     document.getElementById("btnThis").addEventListener("click", () => connect(""));
     document.getElementById("btnRefresh").addEventListener("click", loadFiles);
     document.getElementById("btnAll").addEventListener("click", () => {
-      selected = new Set(files.filter((f) => !f.protected).map((f) => f.path || f.name));
+      selected = new Set([
+        ...folders.map((f) => f.path || f.name),
+        ...files.filter((f) => !f.protected).map((f) => f.path || f.name),
+      ]);
       renderList();
     });
     document.getElementById("btnNone").addEventListener("click", () => {
       selected.clear();
       renderList();
     });
-    document.getElementById("btnUp").addEventListener("click", () => {
-      if (!currentPath) return;
-      const parts = currentPath.split("/").filter(Boolean);
-      parts.pop();
-      currentPath = parts.join("/");
-      localStorage.setItem("oal_current_path", currentPath);
-      loadFiles();
-    });
+    document.getElementById("btnBack").addEventListener("click", goBack);
     apiUrlInput.addEventListener("keydown", (event) => {
       if (event.key === "Enter") connect(apiUrlInput.value);
     });

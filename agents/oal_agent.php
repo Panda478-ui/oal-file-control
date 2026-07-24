@@ -277,6 +277,67 @@ function safe_file(string $root, string $relFile): ?string
     return $real;
 }
 
+function safe_dir(string $root, string $relDir): ?string
+{
+    try {
+        $rel = normalize_rel($relDir);
+    } catch (Throwable $e) {
+        return null;
+    }
+    if ($rel === '') {
+        return null;
+    }
+
+    $name = basename($rel);
+    if (in_array($name, SKIP_NAMES, true)) {
+        return null;
+    }
+
+    $candidate = $root . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $rel);
+    $real = realpath($candidate);
+    $rootReal = realpath($root);
+    if ($real === false || $rootReal === false || !is_dir($real) || strpos($real, $rootReal) !== 0) {
+        return null;
+    }
+    return $real;
+}
+
+function dir_size(string $dir): int
+{
+    $total = 0;
+    $iterator = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS)
+    );
+    foreach ($iterator as $file) {
+        if ($file->isFile()) {
+            $total += (int) $file->getSize();
+        }
+    }
+    return $total;
+}
+
+function rrmdir(string $dir): bool
+{
+    if (!is_dir($dir)) {
+        return false;
+    }
+    $items = scandir($dir) ?: [];
+    foreach ($items as $item) {
+        if ($item === '.' || $item === '..') {
+            continue;
+        }
+        $path = $dir . DIRECTORY_SEPARATOR . $item;
+        if (is_dir($path)) {
+            if (!rrmdir($path)) {
+                return false;
+            }
+        } elseif (!@unlink($path)) {
+            return false;
+        }
+    }
+    return @rmdir($dir);
+}
+
 function delete_files(string $root, array $names, string $currentPath): array
 {
     $prefix = normalize_rel($currentPath);
@@ -294,34 +355,52 @@ function delete_files(string $root, array $names, string $currentPath): array
         $rel = str_contains($name, '/') ? $name : trim($prefix . '/' . $name, '/');
 
         try {
-            $pure = basename(normalize_rel($rel));
+            $normalized = normalize_rel($rel);
+            $pure = basename($normalized);
         } catch (Throwable $e) {
             $missing[] = $name;
             continue;
         }
 
-        if (in_array($pure, PROTECTED_NAMES, true) && !str_contains(normalize_rel($rel), '/')) {
+        if ($normalized === '') {
             $blocked[] = $name;
             continue;
         }
 
-        $path = safe_file($root, $rel);
-        if ($path === null) {
-            $missing[] = $name;
+        if (in_array($pure, PROTECTED_NAMES, true) && !str_contains($normalized, '/')) {
+            $blocked[] = $name;
             continue;
         }
 
-        $size = filesize($path) ?: 0;
-        if (!@unlink($path)) {
-            $missing[] = $name;
+        $filePath = safe_file($root, $normalized);
+        if ($filePath !== null) {
+            $size = filesize($filePath) ?: 0;
+            if (!@unlink($filePath)) {
+                $missing[] = $name;
+                continue;
+            }
+            $deleted[] = basename($filePath);
+            $freed += $size;
             continue;
         }
-        $deleted[] = basename($path);
-        $freed += $size;
+
+        $dirPath = safe_dir($root, $normalized);
+        if ($dirPath !== null) {
+            $size = dir_size($dirPath);
+            if (!rrmdir($dirPath)) {
+                $missing[] = $name;
+                continue;
+            }
+            $deleted[] = basename($dirPath) . '/';
+            $freed += $size;
+            continue;
+        }
+
+        $missing[] = $name;
     }
 
     if ($deleted && !$missing && !$blocked) {
-        $message = 'Eliminados ' . count($deleted) . ' archivo(s): ' . implode(', ', $deleted);
+        $message = 'Eliminados ' . count($deleted) . ' elemento(s): ' . implode(', ', $deleted);
     } elseif ($deleted) {
         $parts = ['Eliminados: ' . implode(', ', $deleted)];
         if ($missing) {
@@ -336,7 +415,7 @@ function delete_files(string $root, array $names, string $currentPath): array
     } elseif ($missing) {
         $message = 'No se encontraron: ' . implode(', ', $missing);
     } else {
-        $message = 'No había archivos para eliminar';
+        $message = 'No había elementos para eliminar';
     }
 
     return [

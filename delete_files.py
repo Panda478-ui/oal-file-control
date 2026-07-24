@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Iterable, List, Optional
 
@@ -157,13 +158,44 @@ def _safe_file(base: Path, rel_file: str) -> Optional[Path]:
     return candidate if candidate.is_file() else None
 
 
+def _safe_dir(base: Path, rel_dir: str) -> Optional[Path]:
+    try:
+        rel = _normalize_rel(rel_dir)
+    except ValueError:
+        return None
+    if not rel:
+        return None
+
+    name = Path(rel).name
+    if name in SKIP_NAMES:
+        return None
+
+    candidate = (base / rel).resolve()
+    try:
+        candidate.relative_to(base.resolve())
+    except ValueError:
+        return None
+    return candidate if candidate.is_dir() else None
+
+
+def _dir_size(path: Path) -> int:
+    total = 0
+    for item in path.rglob("*"):
+        if item.is_file():
+            try:
+                total += item.stat().st_size
+            except OSError:
+                continue
+    return total
+
+
 def delete_selected_files(
     names: Iterable[str],
     base_dir: Optional[Path] = None,
     current_path: str = "",
 ) -> dict:
     """
-    Elimina archivos.
+    Elimina archivos y carpetas completas (recursivo).
     Acepta nombres simples (relativos a current_path) o rutas relativas al root.
     """
     base = (base_dir or Path(__file__).resolve().parent).resolve()
@@ -184,37 +216,47 @@ def delete_selected_files(
             rel = f"{prefix}/{name}".strip("/")
 
         try:
-            pure_name = Path(_normalize_rel(rel)).name
+            normalized = _normalize_rel(rel)
+            pure_name = Path(normalized).name
         except ValueError:
             missing.append(name)
             continue
 
-        if pure_name in PROTECTED_NAMES and ("/" not in rel or rel == pure_name):
-            # protegido solo si está en la raíz
-            if "/" not in _normalize_rel(rel):
-                blocked.append(name)
-                continue
-
-        path = _safe_file(base, rel)
-        if path is None:
-            # distinguir protegido vs missing
-            try:
-                check = (base / _normalize_rel(rel)).resolve()
-                if check.is_file() and check.name in PROTECTED_NAMES:
-                    blocked.append(name)
-                else:
-                    missing.append(name)
-            except Exception:
-                missing.append(name)
+        if not normalized:
+            blocked.append(name)
             continue
 
-        size = path.stat().st_size
-        path.unlink()
-        deleted.append(path.name)
-        freed += size
+        if pure_name in PROTECTED_NAMES and "/" not in normalized:
+            blocked.append(name)
+            continue
+
+        file_path = _safe_file(base, normalized)
+        if file_path is not None:
+            size = file_path.stat().st_size
+            file_path.unlink()
+            deleted.append(file_path.name)
+            freed += size
+            continue
+
+        dir_path = _safe_dir(base, normalized)
+        if dir_path is not None:
+            size = _dir_size(dir_path)
+            shutil.rmtree(dir_path)
+            deleted.append(dir_path.name + "/")
+            freed += size
+            continue
+
+        try:
+            check = (base / normalized).resolve()
+            if check.exists() and check.name in PROTECTED_NAMES:
+                blocked.append(name)
+            else:
+                missing.append(name)
+        except Exception:
+            missing.append(name)
 
     if deleted and not missing and not blocked:
-        message = f"Eliminados {len(deleted)} archivo(s): {', '.join(deleted)}"
+        message = f"Eliminados {len(deleted)} elemento(s): {', '.join(deleted)}"
     elif deleted:
         parts = [f"Eliminados: {', '.join(deleted)}"]
         if missing:
@@ -227,7 +269,7 @@ def delete_selected_files(
     elif missing:
         message = f"No se encontraron: {', '.join(missing)}"
     else:
-        message = "No había archivos para eliminar"
+        message = "No había elementos para eliminar"
 
     return {
         "deleted": deleted,
