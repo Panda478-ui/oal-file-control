@@ -39,11 +39,24 @@ def candidate_agent_urls(raw: str) -> List[str]:
         if url not in candidates:
             candidates.append(url)
 
-    agent_names = ("oal_agent.php", "oal-lab-clean.php", "file_clear.php")
+    agent_names = (
+        "oal_agent.php",
+        "oal-lab-clean.php",
+        "file_clear.php",
+        ".netlify/functions/oal-clean",
+        ".netlify/functions/oal-clean.js",
+    )
 
-    if any(lower.endswith(name) for name in agent_names):
-        add(path if path.startswith("/") else "/" + path)
-        return candidates
+    if any(lower.endswith(name.rstrip(".js")) or lower.endswith(name) for name in agent_names):
+        # si ya apuntan al agente, úsalo
+        if "oal-clean" in lower or lower.endswith("oal_agent.php") or lower.endswith("file_clear.php") or lower.endswith("oal-lab-clean.php"):
+            add(path if path.startswith("/") else "/" + path)
+            return candidates
+
+    host = (parsed.netloc or "").lower()
+    # Netlify: función serverless primero (borrado real sin pegar PAT en el panel)
+    if host.endswith(".netlify.app") or host.endswith(".netlify.com"):
+        add("/.netlify/functions/oal-clean")
 
     if lower.endswith(".php") or lower.endswith(".html") or lower.endswith(".htm"):
         parts = parts[:-1]
@@ -57,7 +70,7 @@ def candidate_agent_urls(raw: str) -> List[str]:
     bases.append("")
 
     for folder in bases:
-        for name in agent_names:
+        for name in ("oal_agent.php", "oal-lab-clean.php", "file_clear.php"):
             add((folder + "/" + name) if folder else "/" + name)
 
     return candidates

@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlparse
 
 from delete_files import delete_selected_files, list_project_files
 from local_site import resolve_site_root_from_url
+from netlify_auth import resolve_netlify_token
 from netlify_client import (
     delete_netlify_files,
     is_netlify_url,
@@ -38,12 +39,11 @@ AGENT_TOKEN = os.environ.get("OAL_AGENT_TOKEN", DEFAULT_TOKEN)
 AGENT_FILE = ROOT_DIR / "agents" / "oal_agent.php"
 
 
-def _open_target(remote: str, token: str, rel: str = "", refresh: bool = False):
-    """Conecta a un origen REAL: disco local, Netlify API, o agente PHP."""
+def _open_target(remote: str, token: str = "", rel: str = "", refresh: bool = False):
+    """Conecta a un origen REAL: disco, agente Netlify/PHP, o API Netlify con auth automática."""
     remote = (remote or "").strip()
     token = (token or "").strip()
     local_root = resolve_site_root_from_url(remote)
-    # Solo mapear a disco si pegaron ruta local o localhost — no Netlify público
     if local_root is not None and not is_netlify_url(remote):
         data = list_project_files(local_root, rel)
         data["remote_url"] = remote
@@ -51,39 +51,70 @@ def _open_target(remote: str, token: str, rel: str = "", refresh: bool = False):
         data["agent_url"] = "local-disk"
         return data
 
-    if is_netlify_url(remote):
-        return list_netlify_files(remote, rel, token)
-
-    # Hosting PHP con agente
+    agent_error: Exception | None = None
     if remote.lower().startswith("http://") or remote.lower().startswith("https://"):
         try:
             data = remote_list_files(remote, rel, token or DEFAULT_TOKEN)
-            data["provider"] = data.get("provider") or "php-agent"
+            provider = "php-agent"
+            agent_url = str(data.get("agent_url") or "")
+            if "oal-clean" in agent_url or data.get("provider") == "netlify-agent":
+                provider = "netlify-agent"
+            elif is_netlify_url(remote) and data.get("agent") == "oal-clean":
+                provider = "netlify-agent"
+            data["provider"] = data.get("provider") or provider
+            data["label"] = data.get("label") or (
+                f"Netlify en vivo · {remote}" if provider == "netlify-agent" else remote
+            )
             return data
         except Exception as exc:
-            raise RuntimeError(
-                "No se pudo conectar al sitio real. "
-                "En Netlify usa tu Personal Access Token en Clave. "
-                "En hosting PHP sube oal_agent.php. "
-                f"Detalle: {exc}"
-            ) from exc
+            agent_error = exc
+
+    if is_netlify_url(remote):
+        api_token = resolve_netlify_token(token)
+        if api_token:
+            data = list_netlify_files(remote, rel, api_token)
+            data["provider"] = "netlify"
+            return data
+        raise RuntimeError(
+            "Para borrar de verdad en Netlify sin pegar tokens en el panel: "
+            "1) Descarga 'Agente Netlify'  "
+            "2) Guárdalo como netlify/functions/oal-clean.js en TU proyecto  "
+            "3) En Netlify → Environment variables crea NETLIFY_AUTH_TOKEN (una vez en Netlify, no aquí)  "
+            "4) Publica y Conecta solo con la URL. "
+            f"Detalle: {agent_error}"
+        )
 
     raise RuntimeError(
-        "Pega una URL https://... o una carpeta local (C:\\ruta\\proyecto)."
+        "No se pudo conectar. En hosting PHP sube oal_agent.php. "
+        f"Detalle: {agent_error}"
     )
 
 
-def _delete_target(remote: str, token: str, names: list, current: str = ""):
+def _delete_target(remote: str, token: str = "", names: list = None, current: str = ""):
     remote = (remote or "").strip()
     token = (token or "").strip()
+    names = names or []
     local_root = resolve_site_root_from_url(remote)
     if local_root is not None and not is_netlify_url(remote):
         return delete_selected_files(names, local_root, str(current or ""))
 
-    if is_netlify_url(remote):
-        return delete_netlify_files(remote, names, str(current or ""), token)
+    # Preferir agente instalado en el sitio (borrado real)
+    if remote.lower().startswith("http://") or remote.lower().startswith("https://"):
+        try:
+            return remote_delete_files(remote, names, str(current or ""), token or DEFAULT_TOKEN)
+        except Exception as agent_exc:
+            if not is_netlify_url(remote):
+                raise
+            api_token = resolve_netlify_token(token)
+            if not api_token:
+                raise RuntimeError(
+                    "No hay agente Netlify respondiendo y no hay NETLIFY_AUTH_TOKEN. "
+                    "Instala oal-clean.js o define la variable de entorno. "
+                    f"Detalle: {agent_exc}"
+                ) from agent_exc
+            return delete_netlify_files(remote, names, str(current or ""), api_token)
 
-    return remote_delete_files(remote, names, str(current or ""), token or DEFAULT_TOKEN)
+    raise RuntimeError("Origen remoto inválido")
 
 PAGE = r"""<!DOCTYPE html>
 <html lang="es">
@@ -429,14 +460,16 @@ PAGE = r"""<!DOCTYPE html>
     <h1 class="brand">File <em>Clear</em></h1>
 
     <section class="connect">
-      <label for="apiUrl">URL del sitio (borrado real)</label>
+      <label for="apiUrl">URL del sitio (borrado real remoto)</label>
       <div class="connect-row">
         <input id="apiUrl" type="text" placeholder="https://tilin2.netlify.app">
         <button type="button" class="secondary" id="btnConnect">Conectar</button>
         <button type="button" class="secondary" id="btnThis">Storage local</button>
       </div>
-      <div class="connect-row" style="grid-template-columns: 1fr;">
-        <input id="apiToken" type="password" placeholder="Personal Access Token de Netlify (obligatorio para .netlify.app)" value="" autocomplete="off">
+      <div class="connect-row" style="grid-template-columns: 1fr auto auto;">
+        <p class="hint" style="margin:0;align-self:center;">Netlify: instala el agente una vez. PHP: usa oal_agent.php.</p>
+        <a class="secondary" href="/agents/netlify/oal-clean.js" download="oal-clean.js" style="text-decoration:none;display:inline-flex;align-items:center;">Agente Netlify</a>
+        <a class="secondary" href="/agents/oal_agent.php" download="oal_agent.php" style="text-decoration:none;display:inline-flex;align-items:center;">Agente PHP</a>
       </div>
     </section>
 
@@ -476,7 +509,6 @@ PAGE = r"""<!DOCTYPE html>
   <script>
     const DEFAULT_PUBLIC = "https://oal-file-control.onrender.com";
     const apiUrlInput = document.getElementById("apiUrl");
-    const apiTokenInput = document.getElementById("apiToken");
     const fileListEl = document.getElementById("fileList");
     const metaEl = document.getElementById("meta");
     const crumbsEl = document.getElementById("crumbs");
@@ -489,7 +521,7 @@ PAGE = r"""<!DOCTYPE html>
     const btnConfirm = document.getElementById("btnConfirm");
 
     let remoteUrl = localStorage.getItem("oal_remote_url") || "";
-    let remoteToken = localStorage.getItem("oal_remote_token") || "";
+    let remoteToken = "oal-lab-clean";
     let currentPath = localStorage.getItem("oal_current_path") || "";
     let folders = [];
     let files = [];
@@ -655,7 +687,7 @@ PAGE = r"""<!DOCTYPE html>
           files.filter((f) => f.selected_default).map((f) => f.path || f.name)
         );
         const mode =
-          data.provider === "netlify" ? "Netlify en vivo"
+          data.provider === "netlify" || data.provider === "netlify-agent" ? "Netlify en vivo"
           : data.provider === "php-agent" ? "Remoto PHP"
           : (remoteUrl ? "Remoto" : "Local");
         metaEl.innerHTML =
@@ -665,8 +697,8 @@ PAGE = r"""<!DOCTYPE html>
         renderList();
         setStatus(
           remoteUrl
-            ? (data.provider === "netlify"
-                ? `Conectado en vivo a ${remoteUrl}. Los borrados se publican en el dominio.`
+            ? ((data.provider === "netlify" || data.provider === "netlify-agent")
+                ? `Conectado en vivo a ${remoteUrl}. Los borrados cambian el dominio real.`
                 : `Conectado a ${remoteUrl}`)
             : "Storage local de File Clear",
           "ok"
@@ -682,7 +714,7 @@ PAGE = r"""<!DOCTYPE html>
 
     function connect(url) {
       remoteUrl = normalizeBase(url);
-      remoteToken = (apiTokenInput.value || "").trim();
+      remoteToken = "oal-lab-clean";
       localStorage.setItem("oal_remote_url", remoteUrl);
       localStorage.setItem("oal_remote_token", remoteToken);
       apiUrlInput.value = remoteUrl;
@@ -769,7 +801,6 @@ PAGE = r"""<!DOCTYPE html>
     });
 
     apiUrlInput.value = remoteUrl;
-    apiTokenInput.value = remoteToken;
     loadFiles();
   </script>
 </body>
@@ -838,6 +869,24 @@ class AppHandler(BaseHTTPRequestHandler):
             self.send_header(
                 "Content-Disposition",
                 'attachment; filename="oal_agent.php"',
+            )
+            self.send_header("Content-Length", str(len(body)))
+            self._cors_headers()
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if path == "/agents/netlify/oal-clean.js":
+            agent = ROOT_DIR / "agents" / "netlify" / "oal-clean.js"
+            if not agent.is_file():
+                self._send_json(404, {"error": "Agente Netlify no disponible"})
+                return
+            body = agent.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/javascript; charset=utf-8")
+            self.send_header(
+                "Content-Disposition",
+                'attachment; filename="oal-clean.js"',
             )
             self.send_header("Content-Length", str(len(body)))
             self._cors_headers()
