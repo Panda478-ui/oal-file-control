@@ -35,7 +35,7 @@ def _request(
     if not token or token == "oal-lab-clean":
         raise RuntimeError(
             "Para Netlify pega tu Personal Access Token en Clave "
-            "(Netlify → User settings → Applications → Personal access tokens). "
+            "(Netlify -> User settings -> Applications -> Personal access tokens). "
             "No hace falta oal_agent.php."
         )
 
