@@ -21,6 +21,7 @@ from netlify_client import (
     is_netlify_url,
     list_netlify_files,
 )
+from netlify_package import build_netlify_install_zip
 from remote_client import (
     DEFAULT_TOKEN,
     remote_delete_files,
@@ -76,12 +77,10 @@ def _open_target(remote: str, token: str = "", rel: str = "", refresh: bool = Fa
             data["provider"] = "netlify"
             return data
         raise RuntimeError(
-            "Para borrar de verdad en Netlify sin pegar tokens en el panel: "
-            "1) Descarga 'Agente Netlify'  "
-            "2) Guárdalo como netlify/functions/oal-clean.js en TU proyecto  "
-            "3) En Netlify -> Environment variables crea NETLIFY_AUTH_TOKEN (una vez en Netlify, no aqui)  "
-            "4) Publica y Conecta solo con la URL. "
-            f"Detalle: {agent_error}"
+            "Falta el agente en ese sitio Netlify. "
+            "Pulsa 'Paquete Netlify', arrastra el ZIP en Netlify → Deploys, "
+            "crea NETLIFY_AUTH_TOKEN en Environment variables, publica, "
+            "y vuelve a Conectar solo con la URL."
         )
 
     raise RuntimeError(
@@ -466,9 +465,10 @@ PAGE = r"""<!DOCTYPE html>
         <button type="button" class="secondary" id="btnConnect">Conectar</button>
         <button type="button" class="secondary" id="btnThis">Storage local</button>
       </div>
-      <div class="connect-row" style="grid-template-columns: 1fr auto auto;">
-        <p class="hint" style="margin:0;align-self:center;">Netlify: instala el agente una vez. PHP: usa oal_agent.php.</p>
-        <a class="secondary" href="/agents/netlify/oal-clean.js" download="oal-clean.js" style="text-decoration:none;display:inline-flex;align-items:center;">Agente Netlify</a>
+      <div class="connect-row" style="grid-template-columns: 1fr auto auto auto;">
+        <p class="hint" style="margin:0;align-self:center;">Netlify: descarga el paquete, arrástralo en Deploys y crea NETLIFY_AUTH_TOKEN una vez.</p>
+        <button type="button" class="secondary" id="btnNetlifyPkg">Paquete Netlify</button>
+        <a class="secondary" href="/agents/netlify/oal-clean.js" download="oal-clean.js" style="text-decoration:none;display:inline-flex;align-items:center;">Agente JS</a>
         <a class="secondary" href="/agents/oal_agent.php" download="oal_agent.php" style="text-decoration:none;display:inline-flex;align-items:center;">Agente PHP</a>
       </div>
     </section>
@@ -774,6 +774,16 @@ PAGE = r"""<!DOCTYPE html>
     document.getElementById("btnConnect").addEventListener("click", () => connect(apiUrlInput.value));
     document.getElementById("btnThis").addEventListener("click", () => connect(""));
     document.getElementById("btnRefresh").addEventListener("click", () => loadFiles({ refresh: true }));
+    document.getElementById("btnNetlifyPkg").addEventListener("click", () => {
+      const url = normalizeBase(apiUrlInput.value) || remoteUrl;
+      if (!url) {
+        setStatus("Pega primero la URL de Netlify (ej. https://tilin2.netlify.app).", "err");
+        return;
+      }
+      setStatus("Preparando ZIP para Netlify…");
+      window.location.href = "/api/netlify-package?remote=" + encodeURIComponent(url);
+      setTimeout(() => setStatus("ZIP descargado. Arrástralo en Netlify → Deploys, crea NETLIFY_AUTH_TOKEN y publica.", "ok"), 1200);
+    });
     document.getElementById("btnAll").addEventListener("click", () => {
       selected = new Set([
         ...folders.map((f) => f.path || f.name),
@@ -907,6 +917,33 @@ class AppHandler(BaseHTTPRequestHandler):
             self._cors_headers()
             self.end_headers()
             self.wfile.write(body)
+            return
+
+        if path == "/api/netlify-package":
+            remote = (query.get("remote") or [""])[0].strip()
+            if not remote or not is_netlify_url(remote):
+                self._send_json(
+                    400,
+                    {"error": "Pega una URL .netlify.app válida para generar el paquete."},
+                )
+                return
+            try:
+                agent = ROOT_DIR / "agents" / "netlify" / "oal-clean.js"
+                zip_path = build_netlify_install_zip(remote, STORAGE_DIR, agent)
+                body = zip_path.read_bytes()
+                host = (urlparse(remote).hostname or "site").replace(".", "-")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header(
+                    "Content-Disposition",
+                    f'attachment; filename="{host}-file-clear-ready.zip"',
+                )
+                self.send_header("Content-Length", str(len(body)))
+                self._cors_headers()
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception as exc:
+                self._send_json(400, {"error": str(exc)})
             return
 
         if path == "/api/health":
