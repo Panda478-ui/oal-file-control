@@ -41,7 +41,7 @@ AGENT_TOKEN = os.environ.get("OAL_AGENT_TOKEN", DEFAULT_TOKEN)
 AGENT_FILE = ROOT_DIR / "agents" / "oal_agent.php"
 
 
-def _open_target(remote: str, token: str, rel: str = ""):
+def _open_target(remote: str, token: str, rel: str = "", refresh: bool = False):
     """Abre un destino sin tokens: disco local → espejo público → Netlify/API opcional → agente."""
     remote = (remote or "").strip()
     token = (token or "").strip()
@@ -60,14 +60,15 @@ def _open_target(remote: str, token: str, rel: str = ""):
     # Sin token: espejo público del sitio (solo URL)
     if remote.lower().startswith("http://") or remote.lower().startswith("https://"):
         mirror = resolve_mirror_if_exists(remote, STORAGE_DIR)
-        # En la raíz se refresca el espejo; en subcarpetas se reutiliza
-        if mirror is None or not (rel or "").strip():
+        # Solo descarga de nuevo si no hay copia o el usuario pidió Actualizar/Conectar
+        if mirror is None or refresh:
             mirror = sync_public_mirror(remote, STORAGE_DIR)
         data = list_project_files(mirror, rel)
         data["remote_url"] = remote
         data["provider"] = "public-mirror"
         data["agent_url"] = "public-mirror"
-        data["root"] = f"Copia local de {remote}"
+        data["root"] = str(mirror)
+        data["label"] = f"Copia editable de {remote}"
         return data
 
     raise RuntimeError(
@@ -91,10 +92,13 @@ def _delete_target(remote: str, token: str, names: list, current: str = ""):
         mirror = sync_public_mirror(remote, STORAGE_DIR)
     if mirror is not None:
         result = delete_selected_files(names, mirror, str(current or ""))
+        deleted = result.get("deleted") or []
         result["message"] = (
-            (result.get("message") or "Eliminado en la copia local.")
-            + " El sitio en línea no cambia hasta que vuelvas a publicar esa carpeta."
+            f"Eliminado: {len(deleted)} elemento(s) de la copia local."
+            if deleted
+            else (result.get("message") or "Nada eliminado")
         )
+        result["ok"] = True
         return result
 
     return remote_delete_files(remote, names, str(current or ""), token or DEFAULT_TOKEN)
@@ -509,13 +513,14 @@ PAGE = r"""<!DOCTYPE html>
       return (url || "").trim();
     }
 
-    function filesUrl(pathValue) {
+    function filesUrl(pathValue, refresh = false) {
       const params = new URLSearchParams();
       if (pathValue) params.set("path", pathValue);
       if (remoteUrl) {
         params.set("remote", remoteUrl);
         params.set("token", remoteToken || "");
       }
+      if (refresh) params.set("refresh", "1");
       const q = params.toString();
       return "/api/files" + (q ? `?${q}` : "");
     }
@@ -649,10 +654,11 @@ PAGE = r"""<!DOCTYPE html>
       updateDeleteButton();
     }
 
-    async function loadFiles() {
-      setStatus("Leyendo origen…");
+    async function loadFiles(opts = {}) {
+      const refresh = !!opts.refresh;
+      setStatus(refresh ? "Descargando sitio…" : "Leyendo origen…");
       try {
-        const res = await fetch(filesUrl(currentPath));
+        const res = await fetch(filesUrl(currentPath, refresh));
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
         folders = data.folders || [];
@@ -662,16 +668,16 @@ PAGE = r"""<!DOCTYPE html>
         selected = new Set(
           files.filter((f) => f.selected_default).map((f) => f.path || f.name)
         );
-        const mode = remoteUrl ? "Remoto" : "Local";
+        const mode = data.provider === "public-mirror" ? "Copia local" : (remoteUrl ? "Remoto" : "Local");
         metaEl.innerHTML =
-          `<strong>${mode}</strong> · <strong>${data.folder_count || 0}</strong> carpetas · <strong>${data.file_count || 0}</strong> archivos · ~<strong>${escapeHtml(data.reclaimable_label || "0 B")}</strong>` +
-          `<span class="path">${escapeHtml(data.folder || data.root || remoteUrl || "")}</span>`;
+          `<strong>${mode}</strong> · <strong>${data.folder_count || 0}</strong> carpetas · <strong>${data.file_count || 0}</strong> archivos · ~<strong>${escapeHtml(data.reclaimable_label || data.total_size_label || "0 B")}</strong>` +
+          `<span class="path">${escapeHtml(data.label || data.folder || data.root || remoteUrl || "")}</span>`;
         renderCrumbs(data.breadcrumb || []);
         renderList();
         setStatus(
           remoteUrl
             ? (data.provider === "public-mirror"
-                ? `Copia local de ${remoteUrl} (sin token). Borrar aquí limpia la copia; el sitio en línea no cambia hasta republicar.`
+                ? `Listo para eliminar en la copia de ${remoteUrl}. Marca archivos y pulsa Eliminar.`
                 : `Conectado a ${remoteUrl}`)
             : "Storage local de File Clear",
           "ok"
@@ -693,15 +699,15 @@ PAGE = r"""<!DOCTYPE html>
       apiUrlInput.value = remoteUrl;
       currentPath = "";
       localStorage.setItem("oal_current_path", "");
-      loadFiles();
+      loadFiles({ refresh: true });
     }
 
     function openModal() {
       const names = [...selected];
       if (!names.length) return;
       modalText.textContent = remoteUrl
-        ? `Se eliminarán ${names.length} elemento(s) del sitio remoto (archivos y/o carpetas completas).`
-        : `Se eliminarán ${names.length} elemento(s) del storage local (archivos y/o carpetas completas).`;
+        ? `Se eliminarán ${names.length} elemento(s) de la copia local (archivos y/o carpetas).`
+        : `Se eliminarán ${names.length} elemento(s) del storage local (archivos y/o carpetas).`;
       modalList.innerHTML = names.map((name) => escapeHtml(name)).join("<br>");
       modal.hidden = false;
       btnConfirm.focus();
@@ -746,7 +752,7 @@ PAGE = r"""<!DOCTYPE html>
 
     document.getElementById("btnConnect").addEventListener("click", () => connect(apiUrlInput.value));
     document.getElementById("btnThis").addEventListener("click", () => connect(""));
-    document.getElementById("btnRefresh").addEventListener("click", loadFiles);
+    document.getElementById("btnRefresh").addEventListener("click", () => loadFiles({ refresh: true }));
     document.getElementById("btnAll").addEventListener("click", () => {
       selected = new Set([
         ...folders.map((f) => f.path || f.name),
@@ -898,9 +904,10 @@ class AppHandler(BaseHTTPRequestHandler):
             rel = (query.get("path") or [""])[0]
             remote = (query.get("remote") or [""])[0].strip()
             token = (query.get("token") or [""])[0] or ""
+            refresh = (query.get("refresh") or [""])[0] in {"1", "true", "yes"}
             try:
                 if remote:
-                    self._send_json(200, _open_target(remote, token, rel))
+                    self._send_json(200, _open_target(remote, token, rel, refresh=refresh))
                 else:
                     self._send_json(200, list_project_files(BASE_DIR, rel))
             except FileNotFoundError as exc:
