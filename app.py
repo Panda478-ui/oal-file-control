@@ -384,9 +384,10 @@ PAGE = r"""<!DOCTYPE html>
         <button type="button" class="secondary" id="btnConnect">Conectar</button>
         <button type="button" class="secondary" id="btnThis">Storage local</button>
       </div>
-      <div class="connect-row" style="grid-template-columns: 1fr auto;">
+      <div class="connect-row" style="grid-template-columns: 1fr auto auto;">
         <input id="apiToken" type="text" placeholder="Clave / archivo oal-lab-clean" value="oal-lab-clean">
-        <a class="secondary" id="btnAgent" href="/agents/oal_agent.php" download="oal_agent.php" style="text-decoration:none;display:inline-flex;align-items:center;">Descargar agente PHP</a>
+        <a class="secondary" id="btnAgent" href="/agents/oal_agent.php" download="oal_agent.php" style="text-decoration:none;display:inline-flex;align-items:center;">Agente PHP</a>
+        <a class="secondary" href="/agents/oal-lab-clean" download="oal-lab-clean" style="text-decoration:none;display:inline-flex;align-items:center;">Clave</a>
       </div>
       <p class="hint">
         Panel: <a href="https://oal-file-control.onrender.com" target="_blank" rel="noopener">oal-file-control.onrender.com</a>.
@@ -780,6 +781,21 @@ class AppHandler(BaseHTTPRequestHandler):
             self.send_header(
                 "Content-Disposition",
                 'attachment; filename="oal_agent.php"',
+            )
+            self.send_header("Content-Length", str(len(body)))
+            self._cors_headers()
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if path == "/agents/oal-lab-clean":
+            marker = ROOT_DIR / "agents" / "oal-lab-clean"
+            body = marker.read_bytes() if marker.is_file() else b"oal-lab-clean\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header(
+                "Content-Disposition",
+                'attachment; filename="oal-lab-clean"',
             )
             self.send_header("Content-Length", str(len(body)))
             self._cors_headers()
