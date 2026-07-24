@@ -15,6 +15,11 @@ from urllib.parse import parse_qs, urlparse
 
 from delete_files import delete_selected_files, list_project_files
 from local_site import resolve_site_root_from_url
+from netlify_client import (
+    delete_netlify_files,
+    is_netlify_url,
+    list_netlify_files,
+)
 from remote_client import (
     DEFAULT_TOKEN,
     normalize_remote_url,
@@ -33,6 +38,47 @@ OPEN_BROWSER = os.environ.get("OPEN_BROWSER", "1" if HOST in {"127.0.0.1", "loca
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "https://oal-file-control.onrender.com")
 AGENT_TOKEN = os.environ.get("OAL_AGENT_TOKEN", DEFAULT_TOKEN)
 AGENT_FILE = ROOT_DIR / "agents" / "oal_agent.php"
+
+
+def _open_target(remote: str, token: str, rel: str = ""):
+    """Abre un destino sin exigir agente: disco local → Netlify API → agente PHP."""
+    remote = (remote or "").strip()
+    token = (token or "").strip()
+    local_root = resolve_site_root_from_url(remote)
+    if local_root is not None:
+        data = list_project_files(local_root, rel)
+        data["remote_url"] = remote
+        data["provider"] = "local-disk"
+        data["agent_url"] = "local-disk"
+        return data
+
+    if is_netlify_url(remote):
+        return list_netlify_files(remote, rel, token)
+
+    # Último recurso: agente PHP en hostings que sí ejecutan PHP
+    try:
+        return remote_list_files(remote, rel, token or DEFAULT_TOKEN)
+    except Exception as exc:
+        raise RuntimeError(
+            "No se pudo conectar sin credenciales. "
+            "Opciones: 1) Pega la carpeta local del proyecto (ej. C:\\ruta\\omga). "
+            "2) Si es Netlify, pega tu Personal Access Token en Clave. "
+            "3) En hosting PHP puedes usar oal_agent.php. "
+            f"Detalle: {exc}"
+        ) from exc
+
+
+def _delete_target(remote: str, token: str, names: list, current: str = ""):
+    remote = (remote or "").strip()
+    token = (token or "").strip()
+    local_root = resolve_site_root_from_url(remote)
+    if local_root is not None:
+        return delete_selected_files(names, local_root, str(current or ""))
+
+    if is_netlify_url(remote):
+        return delete_netlify_files(remote, names, str(current or ""), token)
+
+    return remote_delete_files(remote, names, str(current or ""), token or DEFAULT_TOKEN)
 
 PAGE = r"""<!DOCTYPE html>
 <html lang="es">
@@ -378,16 +424,14 @@ PAGE = r"""<!DOCTYPE html>
     <h1 class="brand">File <em>Clear</em></h1>
 
     <section class="connect">
-      <label for="apiUrl">URL externa o local</label>
+      <label for="apiUrl">URL o carpeta del proyecto</label>
       <div class="connect-row">
-        <input id="apiUrl" type="url" placeholder="https://tu-sitio.ngrok-free.dev/lab_sys/">
+        <input id="apiUrl" type="text" placeholder="https://omga.netlify.app  o  C:\ruta\a\tu\proyecto">
         <button type="button" class="secondary" id="btnConnect">Conectar</button>
         <button type="button" class="secondary" id="btnThis">Storage local</button>
       </div>
-      <div class="connect-row" style="grid-template-columns: 1fr auto auto;">
-        <input id="apiToken" type="text" placeholder="Clave oal-lab-clean" value="oal-lab-clean">
-        <a class="secondary" id="btnAgent" href="/agents/oal_agent.php" download="oal_agent.php" style="text-decoration:none;display:inline-flex;align-items:center;">Agente PHP</a>
-        <a class="secondary" href="/agents/oal-lab-clean" download="oal-lab-clean" style="text-decoration:none;display:inline-flex;align-items:center;">Clave</a>
+      <div class="connect-row" style="grid-template-columns: 1fr;">
+        <input id="apiToken" type="text" placeholder="Token Netlify (solo si conectas un sitio .netlify.app)" value="">
       </div>
     </section>
 
@@ -440,7 +484,7 @@ PAGE = r"""<!DOCTYPE html>
     const btnConfirm = document.getElementById("btnConfirm");
 
     let remoteUrl = localStorage.getItem("oal_remote_url") || "";
-    let remoteToken = localStorage.getItem("oal_remote_token") || "oal-lab-clean";
+    let remoteToken = localStorage.getItem("oal_remote_token") || "";
     let currentPath = localStorage.getItem("oal_current_path") || "";
     let folders = [];
     let files = [];
@@ -455,7 +499,7 @@ PAGE = r"""<!DOCTYPE html>
       if (pathValue) params.set("path", pathValue);
       if (remoteUrl) {
         params.set("remote", remoteUrl);
-        params.set("token", remoteToken || "oal-lab-clean");
+        params.set("token", remoteToken || "");
       }
       const q = params.toString();
       return "/api/files" + (q ? `?${q}` : "");
@@ -621,7 +665,7 @@ PAGE = r"""<!DOCTYPE html>
 
     function connect(url) {
       remoteUrl = normalizeBase(url);
-      remoteToken = (apiTokenInput.value || "oal-lab-clean").trim();
+      remoteToken = (apiTokenInput.value || "").trim();
       localStorage.setItem("oal_remote_url", remoteUrl);
       localStorage.setItem("oal_remote_token", remoteToken);
       apiUrlInput.value = remoteUrl;
@@ -659,7 +703,7 @@ PAGE = r"""<!DOCTYPE html>
             files: names,
             path: currentPath,
             remote: remoteUrl || "",
-            token: remoteToken || "oal-lab-clean",
+            token: remoteToken || "",
           }),
         });
         const data = await res.json();
@@ -813,21 +857,18 @@ class AppHandler(BaseHTTPRequestHandler):
 
         if path == "/api/remote/ping":
             remote = (query.get("remote") or [""])[0]
-            token = (query.get("token") or [AGENT_TOKEN])[0] or AGENT_TOKEN
+            token = (query.get("token") or [""])[0] or ""
             try:
-                local_root = resolve_site_root_from_url(remote)
-                if local_root is not None:
-                    self._send_json(
-                        200,
-                        {
-                            "ok": True,
-                            "agent": "local-disk",
-                            "root": str(local_root),
-                            "remote_url": remote,
-                        },
-                    )
-                else:
-                    self._send_json(200, remote_ping(remote, token))
+                data = _open_target(remote, token, "")
+                self._send_json(
+                    200,
+                    {
+                        "ok": True,
+                        "agent": data.get("provider") or data.get("agent_url") or "ok",
+                        "root": data.get("root") or data.get("folder"),
+                        "remote_url": remote,
+                    },
+                )
             except Exception as exc:
                 self._send_json(400, {"error": str(exc)})
             return
@@ -835,17 +876,10 @@ class AppHandler(BaseHTTPRequestHandler):
         if path == "/api/files":
             rel = (query.get("path") or [""])[0]
             remote = (query.get("remote") or [""])[0].strip()
-            token = (query.get("token") or [AGENT_TOKEN])[0] or AGENT_TOKEN
+            token = (query.get("token") or [""])[0] or ""
             try:
                 if remote:
-                    local_root = resolve_site_root_from_url(remote)
-                    if local_root is not None:
-                        data = list_project_files(local_root, rel)
-                        data["remote_url"] = remote
-                        data["agent_url"] = "local-disk"
-                        self._send_json(200, data)
-                    else:
-                        self._send_json(200, remote_list_files(remote, rel, token))
+                    self._send_json(200, _open_target(remote, token, rel))
                 else:
                     self._send_json(200, list_project_files(BASE_DIR, rel))
             except FileNotFoundError as exc:
@@ -864,17 +898,13 @@ class AppHandler(BaseHTTPRequestHandler):
             names = payload.get("files", [])
             current = payload.get("path", "")
             remote = str(payload.get("remote") or "").strip()
-            token = str(payload.get("token") or AGENT_TOKEN) or AGENT_TOKEN
+            token = str(payload.get("token") or "")
             if not isinstance(names, list):
                 self._send_json(400, {"error": 'Envía {"files": ["archivo.ext"], "path": ""}'})
                 return
             try:
                 if remote:
-                    local_root = resolve_site_root_from_url(remote)
-                    if local_root is not None:
-                        result = delete_selected_files(names, local_root, str(current or ""))
-                    else:
-                        result = remote_delete_files(remote, names, str(current or ""), token)
+                    result = _delete_target(remote, token, names, str(current or ""))
                 else:
                     result = delete_selected_files(names, BASE_DIR, str(current or ""))
             except Exception as exc:
