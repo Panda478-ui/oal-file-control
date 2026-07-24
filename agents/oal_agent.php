@@ -1,12 +1,12 @@
 <?php
 /**
- * OAL File Control — agente remoto
+ * File Clear — agente remoto
  *
- * Colócalo en la carpeta del sitio (ej. /lab_sys/oal_agent.php).
- * Luego conecta desde https://oal-file-control.onrender.com
- * con la URL del sitio o de este agente.
+ * 1) Sube este archivo a la carpeta del sitio (ej. /lab_sys/oal_agent.php)
+ * 2) Sube también el archivo "oal-lab-clean" en la misma carpeta
+ * 3) Conecta cualquier dominio desde https://oal-file-control.onrender.com
  *
- * Seguridad: cambia OAL_AGENT_TOKEN antes de usar en producción.
+ * Autorización: token "oal-lab-clean" O presencia del archivo oal-lab-clean.
  */
 
 declare(strict_types=1);
@@ -20,21 +20,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'OPTIONS') {
     exit;
 }
 
-// Cambia este token si expones el agente públicamente
 const OAL_AGENT_TOKEN = 'oal-lab-clean';
-
-const PROTECTED_NAMES = [
-    'oal_agent.php',
-    'config.php',
-    'config.local.php',
-    'config.school.php',
-    'composer.json',
-    'composer.lock',
-    '.htaccess',
-    '.env',
-];
-
-const SKIP_NAMES = ['.', '..', '.git', 'vendor'];
+const SKIP_NAMES = ['.', '..', '.git'];
 
 $root = realpath(__DIR__);
 if ($root === false) {
@@ -57,8 +44,10 @@ if (is_string($raw) && $raw !== '') {
     }
 }
 
-if (!hash_equals(OAL_AGENT_TOKEN, (string) $token)) {
-    json_out(401, ['error' => 'Token inválido. Usa token=oal-lab-clean']);
+if (!is_authorized((string) $token, $root)) {
+    json_out(401, [
+        'error' => 'No autorizado. Coloca el archivo oal-lab-clean junto al agente o usa token=oal-lab-clean',
+    ]);
 }
 
 $action = $_GET['action'] ?? ($body['action'] ?? 'files');
@@ -68,8 +57,9 @@ if ($action === 'ping') {
     json_out(200, [
         'ok' => true,
         'agent' => 'oal_agent',
-        'version' => '1.0',
+        'version' => '2.0',
         'root' => $root,
+        'auth' => 'oal-lab-clean',
     ]);
 }
 
@@ -96,6 +86,31 @@ if ($action === 'eliminar' && $method === 'POST') {
 }
 
 json_out(404, ['error' => 'Acción no encontrada. Usa action=files|eliminar|ping']);
+
+function is_authorized(string $token, string $root): bool
+{
+    $token = trim($token);
+    if ($token !== '' && hash_equals(OAL_AGENT_TOKEN, $token)) {
+        return true;
+    }
+
+    foreach (['oal-lab-clean', '.oal-lab-clean'] as $name) {
+        $marker = $root . DIRECTORY_SEPARATOR . $name;
+        if (!is_file($marker)) {
+            continue;
+        }
+        $content = trim((string) file_get_contents($marker));
+        // Archivo vacío o con la clave: permite conectar desde cualquier dominio
+        if ($content === '' || $content === OAL_AGENT_TOKEN) {
+            return true;
+        }
+        if ($token !== '' && hash_equals($content, $token)) {
+            return true;
+        }
+    }
+
+    return false;
+}
 
 function json_out(int $status, array $payload): void
 {
@@ -185,7 +200,6 @@ function list_entries(string $root, string $rel): array
             continue;
         }
 
-        $protected = in_array($name, PROTECTED_NAMES, true) && $rel === '';
         $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
         $size = filesize($full);
         if ($size === false) {
@@ -199,17 +213,15 @@ function list_entries(string $root, string $rel): array
             'size' => $size,
             'size_label' => human_size($size),
             'ext' => $ext !== '' ? $ext : 'sin extensión',
-            'protected' => $protected,
-            'selected_default' => !$protected && in_array($ext, ['log', 'tmp', 'cache', 'bak', 'old'], true),
+            'protected' => false,
+            'selected_default' => in_array($ext, ['log', 'tmp', 'cache', 'bak', 'old'], true),
         ];
     }
 
-    // Carpetas primero visualmente (ya vienen ordenadas por nombre; UI también las separa)
     usort($folders, static fn($a, $b) => strcasecmp($a['name'], $b['name']));
     usort($files, static fn($a, $b) => strcasecmp($a['name'], $b['name']));
 
-    $reclaimable = array_values(array_filter($files, static fn($f) => !$f['protected']));
-    $total = array_sum(array_map(static fn($f) => $f['size'], $reclaimable));
+    $total = array_sum(array_map(static fn($f) => $f['size'], $files));
 
     $crumbs = [['name' => 'Inicio', 'path' => '']];
     if ($rel !== '') {
@@ -236,7 +248,7 @@ function list_entries(string $root, string $rel): array
         'count' => count($files) + count($folders),
         'folder_count' => count($folders),
         'file_count' => count($files),
-        'deletable_count' => count($reclaimable),
+        'deletable_count' => count($files),
         'reclaimable_label' => human_size((int) $total),
         'folders' => $folders,
         'files' => $files,
@@ -254,17 +266,7 @@ function safe_file(string $root, string $relFile): ?string
     if ($rel === '') {
         return null;
     }
-
-    $name = basename($rel);
-    $parent = str_replace('\\', '/', dirname($rel));
-    if ($parent === '.') {
-        $parent = '';
-    }
-
-    if (in_array($name, PROTECTED_NAMES, true) && $parent === '') {
-        return null;
-    }
-    if (in_array($name, SKIP_NAMES, true)) {
+    if (in_array(basename($rel), SKIP_NAMES, true)) {
         return null;
     }
 
@@ -287,9 +289,7 @@ function safe_dir(string $root, string $relDir): ?string
     if ($rel === '') {
         return null;
     }
-
-    $name = basename($rel);
-    if (in_array($name, SKIP_NAMES, true)) {
+    if (in_array(basename($rel), SKIP_NAMES, true)) {
         return null;
     }
 
@@ -356,18 +356,12 @@ function delete_files(string $root, array $names, string $currentPath): array
 
         try {
             $normalized = normalize_rel($rel);
-            $pure = basename($normalized);
         } catch (Throwable $e) {
             $missing[] = $name;
             continue;
         }
 
         if ($normalized === '') {
-            $blocked[] = $name;
-            continue;
-        }
-
-        if (in_array($pure, PROTECTED_NAMES, true) && !str_contains($normalized, '/')) {
             $blocked[] = $name;
             continue;
         }
@@ -407,11 +401,11 @@ function delete_files(string $root, array $names, string $currentPath): array
             $parts[] = 'No encontrados: ' . implode(', ', $missing);
         }
         if ($blocked) {
-            $parts[] = 'Protegidos: ' . implode(', ', $blocked);
+            $parts[] = 'Bloqueados: ' . implode(', ', $blocked);
         }
         $message = implode('. ', $parts);
     } elseif ($blocked && !$missing) {
-        $message = 'No se pueden eliminar (protegidos): ' . implode(', ', $blocked);
+        $message = 'No se pueden eliminar: ' . implode(', ', $blocked);
     } elseif ($missing) {
         $message = 'No se encontraron: ' . implode(', ', $missing);
     } else {

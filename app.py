@@ -385,12 +385,12 @@ PAGE = r"""<!DOCTYPE html>
         <button type="button" class="secondary" id="btnThis">Storage local</button>
       </div>
       <div class="connect-row" style="grid-template-columns: 1fr auto;">
-        <input id="apiToken" type="text" placeholder="Token del agente (default: oal-lab-clean)" value="oal-lab-clean">
+        <input id="apiToken" type="text" placeholder="Clave / archivo oal-lab-clean" value="oal-lab-clean">
         <a class="secondary" id="btnAgent" href="/agents/oal_agent.php" download="oal_agent.php" style="text-decoration:none;display:inline-flex;align-items:center;">Descargar agente PHP</a>
       </div>
       <p class="hint">
         Panel: <a href="https://oal-file-control.onrender.com" target="_blank" rel="noopener">oal-file-control.onrender.com</a>.
-        En sitios externos sube <code>oal_agent.php</code> a la carpeta del proyecto (ej. <code>/lab_sys/</code>) y conecta la URL del sitio.
+        En cualquier dominio (local o externo) sube <code>oal_agent.php</code> y el archivo <code>oal-lab-clean</code> a la carpeta del sitio, luego pega la URL y conecta.
       </p>
     </section>
 

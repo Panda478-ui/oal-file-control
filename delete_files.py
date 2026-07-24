@@ -1,20 +1,10 @@
-"""Listado y eliminación segura de archivos y carpetas."""
+"""Listado y eliminación de archivos y carpetas (sin lista de protegidos)."""
 
 from __future__ import annotations
 
 import shutil
 from pathlib import Path
 from typing import Iterable, List, Optional
-
-PROTECTED_NAMES = {
-    "app.py",
-    "delete_files.py",
-    "iniciar.bat",
-    "iniciar-tunel.bat",
-    "render.yaml",
-    "requirements.txt",
-    ".gitignore",
-}
 
 SKIP_NAMES = {"__pycache__", ".git"}
 
@@ -89,8 +79,6 @@ def list_project_files(base_dir: Optional[Path] = None, rel_path: str = "") -> d
         if not path.is_file():
             continue
 
-        # Solo proteger nombres del núcleo en la raíz del almacenamiento
-        protected = path.name in PROTECTED_NAMES and rel == ""
         ext = path.suffix.lower()
         files.append(
             {
@@ -100,12 +88,12 @@ def list_project_files(base_dir: Optional[Path] = None, rel_path: str = "") -> d
                 "size": path.stat().st_size,
                 "size_label": _human_size(path.stat().st_size),
                 "ext": ext.lstrip(".") or "sin extensión",
-                "protected": protected,
-                "selected_default": not protected,
+                "protected": False,
+                "selected_default": ext in {".log", ".tmp", ".cache", ".bak", ".old"},
             }
         )
 
-    reclaimable = [item for item in files if not item["protected"]]
+    reclaimable = list(files)
     total_bytes = sum(item["size"] for item in reclaimable)
     crumbs = [{"name": "Inicio", "path": ""}]
     if rel:
@@ -139,15 +127,7 @@ def _safe_file(base: Path, rel_file: str) -> Optional[Path]:
         return None
     if not rel:
         return None
-
-    name = Path(rel).name
-    parent_rel = str(Path(rel).parent).replace("\\", "/")
-    if parent_rel == ".":
-        parent_rel = ""
-
-    if name in PROTECTED_NAMES and parent_rel == "":
-        return None
-    if name in SKIP_NAMES:
+    if Path(rel).name in SKIP_NAMES:
         return None
 
     candidate = (base / rel).resolve()
@@ -165,9 +145,7 @@ def _safe_dir(base: Path, rel_dir: str) -> Optional[Path]:
         return None
     if not rel:
         return None
-
-    name = Path(rel).name
-    if name in SKIP_NAMES:
+    if Path(rel).name in SKIP_NAMES:
         return None
 
     candidate = (base / rel).resolve()
@@ -194,10 +172,7 @@ def delete_selected_files(
     base_dir: Optional[Path] = None,
     current_path: str = "",
 ) -> dict:
-    """
-    Elimina archivos y carpetas completas (recursivo).
-    Acepta nombres simples (relativos a current_path) o rutas relativas al root.
-    """
+    """Elimina archivos y carpetas completas (recursivo). Sin lista de protegidos."""
     base = (base_dir or Path(__file__).resolve().parent).resolve()
     prefix = _normalize_rel(current_path)
     deleted = []
@@ -210,23 +185,15 @@ def delete_selected_files(
         if not name:
             continue
 
-        if "/" in name:
-            rel = name
-        else:
-            rel = f"{prefix}/{name}".strip("/")
+        rel = name if "/" in name else f"{prefix}/{name}".strip("/")
 
         try:
             normalized = _normalize_rel(rel)
-            pure_name = Path(normalized).name
         except ValueError:
             missing.append(name)
             continue
 
         if not normalized:
-            blocked.append(name)
-            continue
-
-        if pure_name in PROTECTED_NAMES and "/" not in normalized:
             blocked.append(name)
             continue
 
@@ -246,14 +213,7 @@ def delete_selected_files(
             freed += size
             continue
 
-        try:
-            check = (base / normalized).resolve()
-            if check.exists() and check.name in PROTECTED_NAMES:
-                blocked.append(name)
-            else:
-                missing.append(name)
-        except Exception:
-            missing.append(name)
+        missing.append(name)
 
     if deleted and not missing and not blocked:
         message = f"Eliminados {len(deleted)} elemento(s): {', '.join(deleted)}"
@@ -262,10 +222,10 @@ def delete_selected_files(
         if missing:
             parts.append(f"No encontrados: {', '.join(missing)}")
         if blocked:
-            parts.append(f"Protegidos: {', '.join(blocked)}")
+            parts.append(f"Bloqueados: {', '.join(blocked)}")
         message = ". ".join(parts)
     elif blocked and not missing:
-        message = f"No se pueden eliminar (protegidos): {', '.join(blocked)}"
+        message = f"No se pueden eliminar: {', '.join(blocked)}"
     elif missing:
         message = f"No se encontraron: {', '.join(missing)}"
     else:
@@ -294,5 +254,4 @@ if __name__ == "__main__":
     for folder in listing["folders"]:
         print(f"  [dir] {folder['name']}")
     for item in listing["files"]:
-        flag = " [protegido]" if item["protected"] else ""
-        print(f"  - {item['name']} ({item['size_label']}){flag}")
+        print(f"  - {item['name']} ({item['size_label']})")

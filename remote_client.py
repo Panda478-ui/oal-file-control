@@ -1,4 +1,4 @@
-"""Cliente/proxy para agentes OAL remotos (PHP u otra instancia)."""
+"""Cliente/proxy para agentes File Clear en cualquier dominio."""
 
 from __future__ import annotations
 
@@ -6,17 +6,25 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 DEFAULT_TOKEN = "oal-lab-clean"
 
 
-def normalize_remote_url(raw: str) -> str:
+def _join_url(scheme: str, netloc: str, path: str) -> str:
+    if not path.startswith("/"):
+        path = "/" + path
+    return urllib.parse.urlunparse((scheme, netloc, path, "", "", ""))
+
+
+def candidate_agent_urls(raw: str) -> List[str]:
     """
-    Normaliza URLs como:
-      https://host/lab_sys/index.php  -> https://host/lab_sys
-      https://host/lab_sys/oal_agent.php -> https://host/lab_sys/oal_agent.php
-      https://host/lab_sys/ -> https://host/lab_sys
+    Genera posibles URLs del agente a partir de cualquier enlace del sitio.
+    Ejemplos:
+      https://host/lab_sys/index.php
+      https://host/lab_sys/
+      https://host/
+      https://host/lab_sys/oal_agent.php
     """
     value = (raw or "").strip()
     if not value:
@@ -24,29 +32,38 @@ def normalize_remote_url(raw: str) -> str:
 
     parsed = urllib.parse.urlparse(value)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError("La URL remota debe ser http(s)")
+        raise ValueError("La URL remota debe ser http(s)://...")
 
     path = parsed.path or "/"
-    lower = path.lower()
+    lower = path.lower().rstrip("/")
+    parts = [p for p in path.split("/") if p]
+    candidates: List[str] = []
 
-    if lower.endswith("/oal_agent.php"):
-        agent_path = path
-        base_dir = path[: -len("/oal_agent.php")] or ""
-    elif lower.endswith(".php") or lower.endswith(".html") or lower.endswith(".htm"):
-        # quitar archivo final (index.php, login.php, etc.)
-        base_dir = path.rsplit("/", 1)[0]
-        agent_path = (base_dir.rstrip("/") + "/oal_agent.php") if base_dir else "/oal_agent.php"
+    def add(agent_path: str) -> None:
+        url = _join_url(parsed.scheme, parsed.netloc, agent_path)
+        if url not in candidates:
+            candidates.append(url)
+
+    if lower.endswith("oal_agent.php"):
+        add(path if path.startswith("/") else "/" + path)
     else:
-        base_dir = path.rstrip("/")
-        agent_path = (base_dir + "/oal_agent.php") if base_dir else "/oal_agent.php"
+        if lower.endswith(".php") or lower.endswith(".html") or lower.endswith(".htm"):
+            parts = parts[:-1]
+        # carpeta actual
+        base = "/" + "/".join(parts) if parts else ""
+        add((base + "/oal_agent.php") if base else "/oal_agent.php")
+        # subir un nivel (por si pegaron una subruta)
+        if len(parts) >= 1:
+            parent = "/" + "/".join(parts[:-1]) if len(parts) > 1 else ""
+            add((parent + "/oal_agent.php") if parent else "/oal_agent.php")
+        # raíz del dominio
+        add("/oal_agent.php")
 
-    agent_url = urllib.parse.urlunparse(
-        (parsed.scheme, parsed.netloc, agent_path, "", "", "")
-    )
-    base_url = urllib.parse.urlunparse(
-        (parsed.scheme, parsed.netloc, base_dir.rstrip("/") or "", "", "", "")
-    )
-    return agent_url
+    return candidates
+
+
+def normalize_remote_url(raw: str) -> str:
+    return candidate_agent_urls(raw)[0]
 
 
 def _request(
@@ -59,14 +76,14 @@ def _request(
     data = None
     headers = {
         "Accept": "application/json",
-        "User-Agent": "OAL-File-Control/1.0",
+        "User-Agent": "File-Clear/1.0",
         "ngrok-skip-browser-warning": "1",
-        "X-OAL-Token": token,
+        "X-OAL-Token": token or DEFAULT_TOKEN,
     }
 
     if payload is not None:
         body = dict(payload)
-        body.setdefault("token", token)
+        body.setdefault("token", token or DEFAULT_TOKEN)
         data = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
 
@@ -90,19 +107,49 @@ def _request(
         raise RuntimeError(f"No se pudo contactar el origen remoto: {exc.reason}") from exc
 
 
+def _with_first_working_agent(
+    remote_url: str,
+    token: str,
+    runner,
+) -> dict:
+    errors = []
+    for agent in candidate_agent_urls(remote_url):
+        try:
+            result = runner(agent)
+            if isinstance(result, dict):
+                result["agent_url"] = agent
+                result["remote_url"] = remote_url
+            return result
+        except Exception as exc:
+            errors.append(f"{agent} -> {exc}")
+            continue
+    raise RuntimeError(
+        "No se encontró oal_agent.php en ese dominio. "
+        "Sube oal_agent.php y el archivo oal-lab-clean a la carpeta del sitio. "
+        + " | ".join(errors[:3])
+    )
+
+
 def remote_ping(remote_url: str, token: str = DEFAULT_TOKEN) -> dict:
-    agent = normalize_remote_url(remote_url)
-    query = urllib.parse.urlencode({"action": "ping", "token": token})
-    return _request(f"{agent}?{query}", token=token)
+    token = token or DEFAULT_TOKEN
+
+    def runner(agent: str) -> dict:
+        query = urllib.parse.urlencode({"action": "ping", "token": token})
+        return _request(f"{agent}?{query}", token=token)
+
+    return _with_first_working_agent(remote_url, token, runner)
 
 
 def remote_list_files(remote_url: str, path: str = "", token: str = DEFAULT_TOKEN) -> dict:
-    agent = normalize_remote_url(remote_url)
-    query = urllib.parse.urlencode({"action": "files", "path": path or "", "token": token})
-    result = _request(f"{agent}?{query}", token=token)
-    result["remote_url"] = remote_url
-    result["agent_url"] = agent
-    return result
+    token = token or DEFAULT_TOKEN
+
+    def runner(agent: str) -> dict:
+        query = urllib.parse.urlencode(
+            {"action": "files", "path": path or "", "token": token}
+        )
+        return _request(f"{agent}?{query}", token=token)
+
+    return _with_first_working_agent(remote_url, token, runner)
 
 
 def remote_delete_files(
@@ -111,10 +158,19 @@ def remote_delete_files(
     path: str = "",
     token: str = DEFAULT_TOKEN,
 ) -> dict:
-    agent = normalize_remote_url(remote_url)
-    return _request(
-        agent,
-        method="POST",
-        payload={"action": "eliminar", "files": files, "path": path or "", "token": token},
-        token=token,
-    )
+    token = token or DEFAULT_TOKEN
+
+    def runner(agent: str) -> dict:
+        return _request(
+            agent,
+            method="POST",
+            payload={
+                "action": "eliminar",
+                "files": files,
+                "path": path or "",
+                "token": token,
+            },
+            token=token,
+        )
+
+    return _with_first_working_agent(remote_url, token, runner)
