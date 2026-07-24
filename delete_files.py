@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 from typing import Iterable, List, Optional
 
-SKIP_NAMES = {"__pycache__", ".git"}
+SKIP_NAMES = {"__pycache__", ".git", ".file-clear-source"}
 
 
 def _human_size(num_bytes: int) -> str:
