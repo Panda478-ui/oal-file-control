@@ -1,11 +1,7 @@
 """
-OAL File Control — panel web para limpiar archivos y carpetas.
+File Clear — panel web para limpiar archivos y carpetas.
 
 URL principal: https://oal-file-control.onrender.com
-
-Uso local + túnel:
-  iniciar-tunel.bat
-  Luego pega la URL del túnel en el panel de Render.
 """
 
 from __future__ import annotations
