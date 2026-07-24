@@ -10,6 +10,9 @@ PROTECTED_FILES = {
     "app.py",
     "delete_files.py",
     "iniciar.bat",
+    "render.yaml",
+    "requirements.txt",
+    ".gitignore",
 }
 
 SKIP_NAMES = {"__pycache__", ".git"}
