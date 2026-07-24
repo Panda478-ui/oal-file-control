@@ -18,6 +18,13 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from delete_files import delete_selected_files, list_project_files
+from remote_client import (
+    DEFAULT_TOKEN,
+    normalize_remote_url,
+    remote_delete_files,
+    remote_list_files,
+    remote_ping,
+)
 
 HOST = os.environ.get("HOST", "0.0.0.0" if os.environ.get("PORT") else "127.0.0.1")
 PORT = int(os.environ.get("PORT", "5000"))
@@ -27,6 +34,8 @@ STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 BASE_DIR = STORAGE_DIR
 OPEN_BROWSER = os.environ.get("OPEN_BROWSER", "1" if HOST in {"127.0.0.1", "localhost"} else "0") == "1"
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "https://oal-file-control.onrender.com")
+AGENT_TOKEN = os.environ.get("OAL_AGENT_TOKEN", DEFAULT_TOKEN)
+AGENT_FILE = ROOT_DIR / "agents" / "oal_agent.php"
 
 PAGE = r"""<!DOCTYPE html>
 <html lang="es">
@@ -339,18 +348,22 @@ PAGE = r"""<!DOCTYPE html>
   <div class="frame">
     <div class="brand-mark">Panel central</div>
     <h1 class="brand">OAL <em>File Control</em></h1>
-    <p class="lede">Conecta una URL de origen (Render, túnel local u otra instancia) y limpia archivos navegando por sus carpetas.</p>
+    <p class="lede">Pega una URL externa (por ejemplo un sitio en ngrok con <code>oal_agent.php</code>) y limpia basura navegando carpetas y archivos.</p>
 
     <section class="connect">
-      <label for="apiUrl">URL del origen</label>
+      <label for="apiUrl">URL externa o local</label>
       <div class="connect-row">
-        <input id="apiUrl" type="url" placeholder="https://oal-file-control.onrender.com o URL del túnel">
+        <input id="apiUrl" type="url" placeholder="https://tu-sitio.ngrok-free.dev/lab_sys/index.php">
         <button type="button" class="secondary" id="btnConnect">Conectar</button>
-        <button type="button" class="secondary" id="btnThis">Este servidor</button>
+        <button type="button" class="secondary" id="btnThis">Storage local</button>
+      </div>
+      <div class="connect-row" style="grid-template-columns: 1fr auto;">
+        <input id="apiToken" type="text" placeholder="Token del agente (default: oal-lab-clean)" value="oal-lab-clean">
+        <a class="secondary" id="btnAgent" href="/agents/oal_agent.php" download="oal_agent.php" style="text-decoration:none;display:inline-flex;align-items:center;">Descargar agente PHP</a>
       </div>
       <p class="hint">
-        Panel principal: <a href="https://oal-file-control.onrender.com" target="_blank" rel="noopener">oal-file-control.onrender.com</a>.
-        Para limpiar tu PC, ejecuta <code>iniciar-tunel.bat</code> y pega aquí la URL del túnel.
+        Panel: <a href="https://oal-file-control.onrender.com" target="_blank" rel="noopener">oal-file-control.onrender.com</a>.
+        En sitios externos sube <code>oal_agent.php</code> a la carpeta del proyecto (ej. <code>/lab_sys/</code>) y conecta la URL del sitio.
       </p>
     </section>
 
@@ -390,6 +403,7 @@ PAGE = r"""<!DOCTYPE html>
   <script>
     const DEFAULT_PUBLIC = "https://oal-file-control.onrender.com";
     const apiUrlInput = document.getElementById("apiUrl");
+    const apiTokenInput = document.getElementById("apiToken");
     const fileListEl = document.getElementById("fileList");
     const metaEl = document.getElementById("meta");
     const crumbsEl = document.getElementById("crumbs");
@@ -401,21 +415,26 @@ PAGE = r"""<!DOCTYPE html>
     const btnCancel = document.getElementById("btnCancel");
     const btnConfirm = document.getElementById("btnConfirm");
 
-    let apiBase = localStorage.getItem("oal_api_base") || "";
+    let remoteUrl = localStorage.getItem("oal_remote_url") || "";
+    let remoteToken = localStorage.getItem("oal_remote_token") || "oal-lab-clean";
     let currentPath = localStorage.getItem("oal_current_path") || "";
     let folders = [];
     let files = [];
     let selected = new Set();
 
     function normalizeBase(url) {
-      const value = (url || "").trim().replace(/\/+$/, "");
-      return value;
+      return (url || "").trim();
     }
 
-    function api(path) {
-      const base = normalizeBase(apiBase);
-      if (!base) return path;
-      return base + path;
+    function filesUrl(pathValue) {
+      const params = new URLSearchParams();
+      if (pathValue) params.set("path", pathValue);
+      if (remoteUrl) {
+        params.set("remote", remoteUrl);
+        params.set("token", remoteToken || "oal-lab-clean");
+      }
+      const q = params.toString();
+      return "/api/files" + (q ? `?${q}` : "");
     }
 
     function setStatus(text, kind = "") {
@@ -521,10 +540,9 @@ PAGE = r"""<!DOCTYPE html>
     async function loadFiles() {
       setStatus("Leyendo origen…");
       try {
-        const query = currentPath ? `?path=${encodeURIComponent(currentPath)}` : "";
-        const res = await fetch(api(`/api/files${query}`));
-        if (!res.ok) throw new Error("HTTP " + res.status);
+        const res = await fetch(filesUrl(currentPath));
         const data = await res.json();
+        if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
         folders = data.folders || [];
         files = data.files || [];
         currentPath = data.path || "";
@@ -532,25 +550,28 @@ PAGE = r"""<!DOCTYPE html>
         selected = new Set(
           files.filter((f) => f.selected_default).map((f) => f.path || f.name)
         );
+        const mode = remoteUrl ? "Remoto" : "Local";
         metaEl.innerHTML =
-          `<strong>${data.folder_count || 0}</strong> carpetas · <strong>${data.file_count || 0}</strong> archivos · ~<strong>${escapeHtml(data.reclaimable_label || "0 B")}</strong>` +
-          `<span class="path">${escapeHtml(data.folder || data.root || "")}</span>`;
+          `<strong>${mode}</strong> · <strong>${data.folder_count || 0}</strong> carpetas · <strong>${data.file_count || 0}</strong> archivos · ~<strong>${escapeHtml(data.reclaimable_label || "0 B")}</strong>` +
+          `<span class="path">${escapeHtml(data.folder || data.root || remoteUrl || "")}</span>`;
         renderCrumbs(data.breadcrumb || []);
         renderList();
-        setStatus(apiBase ? `Conectado a ${apiBase}` : "Conectado a este servidor", "ok");
+        setStatus(remoteUrl ? `Conectado a ${remoteUrl}` : "Storage local de OAL", "ok");
       } catch (err) {
         folders = [];
         files = [];
         renderList();
         metaEl.textContent = "No se pudo leer el origen";
-        setStatus("Error de conexión. Revisa la URL del origen o el túnel.", "err");
+        setStatus(err.message || "Error de conexión. ¿Subiste oal_agent.php al sitio remoto?", "err");
       }
     }
 
     function connect(url) {
-      apiBase = normalizeBase(url);
-      localStorage.setItem("oal_api_base", apiBase);
-      apiUrlInput.value = apiBase;
+      remoteUrl = normalizeBase(url);
+      remoteToken = (apiTokenInput.value || "oal-lab-clean").trim();
+      localStorage.setItem("oal_remote_url", remoteUrl);
+      localStorage.setItem("oal_remote_token", remoteToken);
+      apiUrlInput.value = remoteUrl;
       currentPath = "";
       localStorage.setItem("oal_current_path", "");
       loadFiles();
@@ -559,7 +580,9 @@ PAGE = r"""<!DOCTYPE html>
     function openModal() {
       const names = [...selected];
       if (!names.length) return;
-      modalText.textContent = `Se eliminarán ${names.length} archivo(s) del origen conectado.`;
+      modalText.textContent = remoteUrl
+        ? `Se eliminarán ${names.length} archivo(s) del sitio remoto.`
+        : `Se eliminarán ${names.length} archivo(s) del storage local.`;
       modalList.innerHTML = names.map((name) => escapeHtml(name)).join("<br>");
       modal.hidden = false;
       btnConfirm.focus();
@@ -576,19 +599,25 @@ PAGE = r"""<!DOCTYPE html>
       btnCancel.disabled = true;
       btnConfirm.textContent = "Procesando…";
       try {
-        const res = await fetch(api("/api/eliminar"), {
+        const res = await fetch("/api/eliminar", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ files: names, path: currentPath }),
+          body: JSON.stringify({
+            files: names,
+            path: currentPath,
+            remote: remoteUrl || "",
+            token: remoteToken || "oal-lab-clean",
+          }),
         });
         const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Error al eliminar");
         closeModal();
         const kind = data.deleted && data.deleted.length ? "ok" : "warn";
         const extra = data.freed_label ? ` · Liberado ${data.freed_label}` : "";
         setStatus((data.message || "Operación completada") + extra, kind);
         await loadFiles();
       } catch (err) {
-        setStatus("Error de comunicación con el origen.", "err");
+        setStatus(err.message || "Error de comunicación con el origen.", "err");
       } finally {
         btnConfirm.disabled = false;
         btnCancel.disabled = false;
@@ -629,12 +658,8 @@ PAGE = r"""<!DOCTYPE html>
       if (event.key === "Escape" && !modal.hidden) closeModal();
     });
 
-    apiUrlInput.value = apiBase;
-    if (!apiBase && location.hostname.includes("onrender.com")) {
-      apiUrlInput.placeholder = "Pega aquí la URL del túnel a tu PC";
-    } else if (!apiBase) {
-      apiUrlInput.placeholder = DEFAULT_PUBLIC + " o URL del túnel";
-    }
+    apiUrlInput.value = remoteUrl;
+    apiTokenInput.value = remoteToken;
     loadFiles();
   </script>
 </body>
@@ -693,6 +718,23 @@ class AppHandler(BaseHTTPRequestHandler):
             self._send_html(200, PAGE)
             return
 
+        if path == "/agents/oal_agent.php":
+            if not AGENT_FILE.is_file():
+                self._send_json(404, {"error": "Agente no disponible"})
+                return
+            body = AGENT_FILE.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header(
+                "Content-Disposition",
+                'attachment; filename="oal_agent.php"',
+            )
+            self.send_header("Content-Length", str(len(body)))
+            self._cors_headers()
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         if path == "/api/health":
             self._send_json(
                 200,
@@ -700,17 +742,32 @@ class AppHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "public_url": PUBLIC_URL,
                     "storage": str(BASE_DIR),
+                    "agent_token_default": AGENT_TOKEN,
                 },
             )
             return
 
+        if path == "/api/remote/ping":
+            remote = (query.get("remote") or [""])[0]
+            token = (query.get("token") or [AGENT_TOKEN])[0] or AGENT_TOKEN
+            try:
+                self._send_json(200, remote_ping(remote, token))
+            except Exception as exc:
+                self._send_json(400, {"error": str(exc)})
+            return
+
         if path == "/api/files":
             rel = (query.get("path") or [""])[0]
+            remote = (query.get("remote") or [""])[0].strip()
+            token = (query.get("token") or [AGENT_TOKEN])[0] or AGENT_TOKEN
             try:
-                self._send_json(200, list_project_files(BASE_DIR, rel))
+                if remote:
+                    self._send_json(200, remote_list_files(remote, rel, token))
+                else:
+                    self._send_json(200, list_project_files(BASE_DIR, rel))
             except FileNotFoundError as exc:
                 self._send_json(404, {"error": str(exc)})
-            except ValueError as exc:
+            except Exception as exc:
                 self._send_json(400, {"error": str(exc)})
             return
 
@@ -723,12 +780,17 @@ class AppHandler(BaseHTTPRequestHandler):
             payload = self._read_json_body()
             names = payload.get("files", [])
             current = payload.get("path", "")
+            remote = str(payload.get("remote") or "").strip()
+            token = str(payload.get("token") or AGENT_TOKEN) or AGENT_TOKEN
             if not isinstance(names, list):
                 self._send_json(400, {"error": 'Envía {"files": ["archivo.ext"], "path": ""}'})
                 return
             try:
-                result = delete_selected_files(names, BASE_DIR, str(current or ""))
-            except ValueError as exc:
+                if remote:
+                    result = remote_delete_files(remote, names, str(current or ""), token)
+                else:
+                    result = delete_selected_files(names, BASE_DIR, str(current or ""))
+            except Exception as exc:
                 self._send_json(400, {"error": str(exc)})
                 return
             self._send_json(200, result)
