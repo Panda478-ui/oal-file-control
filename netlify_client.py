@@ -1,8 +1,9 @@
-"""Cliente Netlify API — listar/eliminar archivos sin oal_agent.php."""
+"""Cliente Netlify API — listar y borrar archivos REALES del sitio en vivo."""
 
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -29,17 +30,19 @@ def _request(
     path: str,
     token: str,
     payload: Optional[dict] = None,
-    timeout: int = 60,
+    raw_body: Optional[bytes] = None,
+    content_type: Optional[str] = None,
+    timeout: int = 90,
 ) -> Any:
     token = (token or "").strip()
     if not token or token == "oal-lab-clean":
         raise RuntimeError(
-            "Para Netlify pega tu Personal Access Token en Clave "
-            "(Netlify -> User settings -> Applications -> Personal access tokens). "
-            "No hace falta oal_agent.php."
+            "Para borrar de verdad en Netlify necesitas un Personal Access Token. "
+            "Netlify -> User settings -> Applications -> Personal access tokens -> New access token. "
+            "Pegalo en Clave y vuelve a Conectar."
         )
 
-    data = None
+    data = raw_body
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
@@ -48,13 +51,19 @@ def _request(
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
+    elif raw_body is not None:
+        headers["Content-Type"] = content_type or "application/octet-stream"
 
-    url = API + path
+    url = path if path.startswith("http") else API + path
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-            return json.loads(raw) if raw else {}
+            raw = resp.read()
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            if "json" in ctype or (raw[:1] in (b"{", b"[")):
+                text = raw.decode("utf-8", errors="replace")
+                return json.loads(text) if text else {}
+            return raw
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         try:
@@ -96,7 +105,6 @@ def resolve_site(token: str, site_url: str) -> dict:
         if hint and hint == str(site.get("name") or "").lower():
             return site
 
-    # intento directo por id/nombre
     if hint:
         try:
             site = _request("GET", f"/sites/{urllib.parse.quote(hint)}", token)
@@ -107,7 +115,7 @@ def resolve_site(token: str, site_url: str) -> dict:
 
     raise RuntimeError(
         f"No encontré el sitio Netlify '{hint or target}' con ese token. "
-        "Revisa que el token sea de la misma cuenta que publicó omga.netlify.app."
+        "Usa el token de la misma cuenta que publicó el sitio."
     )
 
 
@@ -129,6 +137,11 @@ def _ext_of(name: str) -> str:
     return name.rsplit(".", 1)[-1].upper()
 
 
+def _norm_path(value: str) -> str:
+    full = "/" + "/".join(p for p in str(value or "").replace("\\", "/").split("/") if p)
+    return full if full != "/" else "/"
+
+
 def list_netlify_files(site_url: str, path: str = "", token: str = "") -> dict:
     site = resolve_site(token, site_url)
     site_id = site["id"]
@@ -140,14 +153,12 @@ def list_netlify_files(site_url: str, path: str = "", token: str = "") -> dict:
     prefix = f"/{rel}" if rel else ""
 
     folders: set[str] = set()
-    entries: List[dict] = []
+    file_rows: List[dict] = []
 
     for item in files:
-        full = str(item.get("path") or item.get("id") or "")
-        if not full.startswith("/"):
-            full = "/" + full
-        # normalizar
-        full = "/" + "/".join(p for p in full.split("/") if p)
+        full = _norm_path(item.get("path") or item.get("id") or "")
+        if full == "/":
+            continue
 
         if prefix:
             if full == prefix:
@@ -162,58 +173,103 @@ def list_netlify_files(site_url: str, path: str = "", token: str = "") -> dict:
             continue
 
         if "/" in rest:
-            folder_name = rest.split("/", 1)[0]
-            folders.add(folder_name)
+            folders.add(rest.split("/", 1)[0])
             continue
 
         size = int(item.get("size") or 0)
-        entries.append(
+        file_rows.append(
             {
                 "name": rest,
+                "type": "file",
                 "path": f"{rel}/{rest}".strip("/") if rel else rest,
                 "size": size,
                 "size_label": _human_size(size),
                 "ext": _ext_of(rest),
-                "kind": "file",
                 "protected": False,
-                "selected": False,
+                "selected_default": False,
             }
         )
 
-    for name in sorted(folders):
-        entries.append(
-            {
-                "name": name,
-                "path": f"{rel}/{name}".strip("/") if rel else name,
-                "size": 0,
-                "size_label": "carpeta",
-                "ext": "CARPETA",
-                "kind": "folder",
-                "protected": False,
-                "selected": False,
-            }
-        )
+    folder_rows = [
+        {
+            "name": name,
+            "type": "folder",
+            "path": f"{rel}/{name}".strip("/") if rel else name,
+            "protected": False,
+        }
+        for name in sorted(folders)
+    ]
 
-    entries.sort(key=lambda f: (0 if f["kind"] == "folder" else 1, f["name"].lower()))
-    folder_count = sum(1 for f in entries if f["kind"] == "folder")
-    file_count = len(entries) - folder_count
-    total = sum(int(f.get("size") or 0) for f in entries if f["kind"] == "file")
+    file_rows.sort(key=lambda f: f["name"].lower())
+    crumbs = [{"name": "Inicio", "path": ""}]
+    if rel:
+        built = []
+        for part in rel.split("/"):
+            built.append(part)
+            crumbs.append({"name": part, "path": "/".join(built)})
+
+    parent = "/".join(rel.split("/")[:-1]) if rel else None
+    total = sum(int(f.get("size") or 0) for f in file_rows)
+    root = site.get("ssl_url") or site.get("url") or site_url
 
     return {
         "ok": True,
         "provider": "netlify",
-        "root": site.get("ssl_url") or site.get("url") or site_url,
-        "folder": rel or "/",
-        "parent": "/".join(rel.split("/")[:-1]) if rel else None,
-        "files": entries,
-        "file_count": file_count,
-        "folder_count": folder_count,
-        "total_size": total,
+        "root": root,
+        "folder": root if not rel else f"{root.rstrip('/')}/{rel}",
+        "path": rel,
+        "parent": parent,
+        "breadcrumb": crumbs,
+        "folders": folder_rows,
+        "files": file_rows,
+        "folder_count": len(folder_rows),
+        "file_count": len(file_rows),
+        "reclaimable_label": _human_size(total),
         "total_size_label": _human_size(total),
         "site_id": site_id,
         "site_name": site.get("name"),
         "remote_url": site_url,
+        "label": f"Netlify en vivo · {site.get('name') or root}",
     }
+
+
+def _download_site_file(site_id: str, file_path: str, token: str, public_url: str) -> bytes:
+    # 1) API del archivo
+    api_path = file_path if file_path.startswith("/") else "/" + file_path
+    try:
+        raw = _request(
+            "GET",
+            f"/sites/{site_id}/files{urllib.parse.quote(api_path, safe='/')}",
+            token,
+        )
+        if isinstance(raw, (bytes, bytearray)):
+            return bytes(raw)
+    except Exception:
+        pass
+
+    # 2) URL pública del sitio
+    pub = (public_url or "").rstrip("/") + api_path
+    req = urllib.request.Request(
+        pub,
+        headers={"User-Agent": "File-Clear/1.0", "Accept": "*/*"},
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return resp.read()
+
+
+def _wait_deploy(site_id: str, deploy_id: str, token: str, timeout: int = 120) -> dict:
+    deadline = time.time() + timeout
+    last = {}
+    while time.time() < deadline:
+        last = _request("GET", f"/sites/{site_id}/deploys/{deploy_id}", token)
+        state = str(last.get("state") or "")
+        if state in {"ready", "current"}:
+            return last
+        if state in {"error", "rejected"}:
+            raise RuntimeError(f"Deploy Netlify falló: {state}")
+        time.sleep(1.5)
+    return last
 
 
 def delete_netlify_files(
@@ -222,8 +278,10 @@ def delete_netlify_files(
     path: str = "",
     token: str = "",
 ) -> dict:
+    """Publica un nuevo deploy sin los archivos/carpetas marcados (borrado real en el dominio)."""
     site = resolve_site(token, site_url)
     site_id = site["id"]
+    public_url = str(site.get("ssl_url") or site.get("url") or site_url).rstrip("/")
     current = _request("GET", f"/sites/{site_id}/files", token)
     if not isinstance(current, list):
         raise RuntimeError("No se pudo leer el deploy actual de Netlify")
@@ -234,57 +292,78 @@ def delete_netlify_files(
         item = str(name or "").replace("\\", "/").strip().strip("/")
         if not item:
             continue
-        # rutas absolutas dentro del sitio
         if rel and not item.startswith(rel + "/") and item != rel:
             full = f"/{rel}/{item}"
         else:
             full = "/" + item
-        full = "/" + "/".join(p for p in full.split("/") if p)
-        remove.add(full)
+        remove.add(_norm_path(full))
 
     keep_files: dict[str, str] = {}
+    sha_to_path: dict[str, str] = {}
     deleted: List[str] = []
+
     for item in current:
-        full = str(item.get("path") or item.get("id") or "")
-        if not full.startswith("/"):
-            full = "/" + full
-        full = "/" + "/".join(p for p in full.split("/") if p)
-        sha = str(item.get("sha") or "")
-        if not sha:
+        full = _norm_path(item.get("path") or item.get("id") or "")
+        sha = str(item.get("sha") or "").strip()
+        if full == "/" or not sha:
             continue
 
-        drop = False
-        for target in remove:
-            if full == target or full.startswith(target.rstrip("/") + "/"):
-                drop = True
-                break
+        drop = any(
+            full == target or full.startswith(target.rstrip("/") + "/")
+            for target in remove
+        )
         if drop:
             deleted.append(full)
             continue
         keep_files[full] = sha
+        sha_to_path[sha] = full
 
     if not deleted:
         return {
-            "ok": True,
+            "ok": False,
             "deleted": [],
             "errors": [{"file": n, "error": "No encontrado en el deploy"} for n in names],
             "remaining": len(keep_files),
+            "message": "No se encontró nada para borrar en Netlify.",
         }
+
+    if not keep_files:
+        # Netlify no acepta deploy vacío fácilmente: deja un index mínimo
+        raise RuntimeError(
+            "No se puede dejar el sitio Netlify sin archivos. "
+            "Deja al menos index.html u otro archivo."
+        )
 
     deploy = _request(
         "POST",
         f"/sites/{site_id}/deploys",
         token,
-        payload={"files": keep_files},
+        payload={"files": keep_files, "draft": False},
     )
-    required = deploy.get("required") or []
-    if required:
-        # Los digests ya deberían existir en Netlify al solo borrar.
-        # Si pide upload, algo falló con los SHA.
-        raise RuntimeError(
-            "Netlify pidió re-subir archivos al borrar. "
-            "Vuelve a intentar o elimina desde el proyecto local y redespliega."
+    deploy_id = str(deploy.get("id") or "")
+    if not deploy_id:
+        raise RuntimeError("Netlify no devolvió deploy_id")
+
+    required = list(deploy.get("required") or [])
+    for sha in required:
+        file_path = sha_to_path.get(sha)
+        if not file_path:
+            raise RuntimeError(
+                f"Netlify pidió re-subir un archivo desconocido ({sha[:8]}…)."
+            )
+        content = _download_site_file(site_id, file_path, token, public_url)
+        upload_path = urllib.parse.quote(file_path.lstrip("/"), safe="/")
+        _request(
+            "PUT",
+            f"/deploys/{deploy_id}/files/{upload_path}",
+            token,
+            raw_body=content,
+            content_type="application/octet-stream",
         )
+
+    ready = _wait_deploy(site_id, deploy_id, token)
+    state = str(ready.get("state") or deploy.get("state") or "")
+    live = ready.get("ssl_url") or ready.get("deploy_ssl_url") or public_url
 
     return {
         "ok": True,
@@ -292,6 +371,11 @@ def delete_netlify_files(
         "deleted": deleted,
         "errors": [],
         "remaining": len(keep_files),
-        "deploy_id": deploy.get("id"),
-        "deploy_url": deploy.get("deploy_ssl_url") or deploy.get("ssl_url"),
+        "deploy_id": deploy_id,
+        "deploy_state": state,
+        "deploy_url": live,
+        "message": (
+            f"Borrado real en Netlify: {len(deleted)} elemento(s). "
+            f"Estado deploy: {state or 'ok'}. Revisa {live}"
+        ),
     }

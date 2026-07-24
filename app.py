@@ -20,13 +20,10 @@ from netlify_client import (
     is_netlify_url,
     list_netlify_files,
 )
-from public_site import resolve_mirror_if_exists, sync_public_mirror
 from remote_client import (
     DEFAULT_TOKEN,
-    normalize_remote_url,
     remote_delete_files,
     remote_list_files,
-    remote_ping,
 )
 
 HOST = os.environ.get("HOST", "0.0.0.0" if os.environ.get("PORT") else "127.0.0.1")
@@ -42,38 +39,37 @@ AGENT_FILE = ROOT_DIR / "agents" / "oal_agent.php"
 
 
 def _open_target(remote: str, token: str, rel: str = "", refresh: bool = False):
-    """Abre un destino sin tokens: disco local → espejo público → Netlify/API opcional → agente."""
+    """Conecta a un origen REAL: disco local, Netlify API, o agente PHP."""
     remote = (remote or "").strip()
     token = (token or "").strip()
     local_root = resolve_site_root_from_url(remote)
-    if local_root is not None:
+    # Solo mapear a disco si pegaron ruta local o localhost — no Netlify público
+    if local_root is not None and not is_netlify_url(remote):
         data = list_project_files(local_root, rel)
         data["remote_url"] = remote
         data["provider"] = "local-disk"
         data["agent_url"] = "local-disk"
         return data
 
-    # Token Netlify opcional (si el usuario lo pone, se usa)
-    if is_netlify_url(remote) and token and token != "oal-lab-clean":
+    if is_netlify_url(remote):
         return list_netlify_files(remote, rel, token)
 
-    # Sin token: espejo público del sitio (solo URL)
+    # Hosting PHP con agente
     if remote.lower().startswith("http://") or remote.lower().startswith("https://"):
-        mirror = resolve_mirror_if_exists(remote, STORAGE_DIR)
-        # Solo descarga de nuevo si no hay copia o el usuario pidió Actualizar/Conectar
-        if mirror is None or refresh:
-            mirror = sync_public_mirror(remote, STORAGE_DIR)
-        data = list_project_files(mirror, rel)
-        data["remote_url"] = remote
-        data["provider"] = "public-mirror"
-        data["agent_url"] = "public-mirror"
-        data["root"] = str(mirror)
-        data["label"] = f"Copia editable de {remote}"
-        return data
+        try:
+            data = remote_list_files(remote, rel, token or DEFAULT_TOKEN)
+            data["provider"] = data.get("provider") or "php-agent"
+            return data
+        except Exception as exc:
+            raise RuntimeError(
+                "No se pudo conectar al sitio real. "
+                "En Netlify usa tu Personal Access Token en Clave. "
+                "En hosting PHP sube oal_agent.php. "
+                f"Detalle: {exc}"
+            ) from exc
 
     raise RuntimeError(
-        "No se pudo abrir ese origen. Pega una URL (https://...) "
-        "o la carpeta local del proyecto (C:\\ruta\\proyecto)."
+        "Pega una URL https://... o una carpeta local (C:\\ruta\\proyecto)."
     )
 
 
@@ -81,25 +77,11 @@ def _delete_target(remote: str, token: str, names: list, current: str = ""):
     remote = (remote or "").strip()
     token = (token or "").strip()
     local_root = resolve_site_root_from_url(remote)
-    if local_root is not None:
+    if local_root is not None and not is_netlify_url(remote):
         return delete_selected_files(names, local_root, str(current or ""))
 
-    if is_netlify_url(remote) and token and token != "oal-lab-clean":
+    if is_netlify_url(remote):
         return delete_netlify_files(remote, names, str(current or ""), token)
-
-    mirror = resolve_mirror_if_exists(remote, STORAGE_DIR)
-    if mirror is None and (remote.startswith("http://") or remote.startswith("https://")):
-        mirror = sync_public_mirror(remote, STORAGE_DIR)
-    if mirror is not None:
-        result = delete_selected_files(names, mirror, str(current or ""))
-        deleted = result.get("deleted") or []
-        result["message"] = (
-            f"Eliminado: {len(deleted)} elemento(s) de la copia local."
-            if deleted
-            else (result.get("message") or "Nada eliminado")
-        )
-        result["ok"] = True
-        return result
 
     return remote_delete_files(remote, names, str(current or ""), token or DEFAULT_TOKEN)
 
@@ -447,11 +429,14 @@ PAGE = r"""<!DOCTYPE html>
     <h1 class="brand">File <em>Clear</em></h1>
 
     <section class="connect">
-      <label for="apiUrl">URL o carpeta del proyecto</label>
+      <label for="apiUrl">URL del sitio (borrado real)</label>
       <div class="connect-row">
-        <input id="apiUrl" type="text" placeholder="https://omga.netlify.app">
+        <input id="apiUrl" type="text" placeholder="https://tilin2.netlify.app">
         <button type="button" class="secondary" id="btnConnect">Conectar</button>
         <button type="button" class="secondary" id="btnThis">Storage local</button>
+      </div>
+      <div class="connect-row" style="grid-template-columns: 1fr;">
+        <input id="apiToken" type="password" placeholder="Personal Access Token de Netlify (obligatorio para .netlify.app)" value="" autocomplete="off">
       </div>
     </section>
 
@@ -491,6 +476,7 @@ PAGE = r"""<!DOCTYPE html>
   <script>
     const DEFAULT_PUBLIC = "https://oal-file-control.onrender.com";
     const apiUrlInput = document.getElementById("apiUrl");
+    const apiTokenInput = document.getElementById("apiToken");
     const fileListEl = document.getElementById("fileList");
     const metaEl = document.getElementById("meta");
     const crumbsEl = document.getElementById("crumbs");
@@ -503,7 +489,7 @@ PAGE = r"""<!DOCTYPE html>
     const btnConfirm = document.getElementById("btnConfirm");
 
     let remoteUrl = localStorage.getItem("oal_remote_url") || "";
-    let remoteToken = "";
+    let remoteToken = localStorage.getItem("oal_remote_token") || "";
     let currentPath = localStorage.getItem("oal_current_path") || "";
     let folders = [];
     let files = [];
@@ -668,7 +654,10 @@ PAGE = r"""<!DOCTYPE html>
         selected = new Set(
           files.filter((f) => f.selected_default).map((f) => f.path || f.name)
         );
-        const mode = data.provider === "public-mirror" ? "Copia local" : (remoteUrl ? "Remoto" : "Local");
+        const mode =
+          data.provider === "netlify" ? "Netlify en vivo"
+          : data.provider === "php-agent" ? "Remoto PHP"
+          : (remoteUrl ? "Remoto" : "Local");
         metaEl.innerHTML =
           `<strong>${mode}</strong> · <strong>${data.folder_count || 0}</strong> carpetas · <strong>${data.file_count || 0}</strong> archivos · ~<strong>${escapeHtml(data.reclaimable_label || data.total_size_label || "0 B")}</strong>` +
           `<span class="path">${escapeHtml(data.label || data.folder || data.root || remoteUrl || "")}</span>`;
@@ -676,8 +665,8 @@ PAGE = r"""<!DOCTYPE html>
         renderList();
         setStatus(
           remoteUrl
-            ? (data.provider === "public-mirror"
-                ? `Listo para eliminar en la copia de ${remoteUrl}. Marca archivos y pulsa Eliminar.`
+            ? (data.provider === "netlify"
+                ? `Conectado en vivo a ${remoteUrl}. Los borrados se publican en el dominio.`
                 : `Conectado a ${remoteUrl}`)
             : "Storage local de File Clear",
           "ok"
@@ -693,9 +682,9 @@ PAGE = r"""<!DOCTYPE html>
 
     function connect(url) {
       remoteUrl = normalizeBase(url);
-      remoteToken = "";
+      remoteToken = (apiTokenInput.value || "").trim();
       localStorage.setItem("oal_remote_url", remoteUrl);
-      localStorage.removeItem("oal_remote_token");
+      localStorage.setItem("oal_remote_token", remoteToken);
       apiUrlInput.value = remoteUrl;
       currentPath = "";
       localStorage.setItem("oal_current_path", "");
@@ -706,8 +695,8 @@ PAGE = r"""<!DOCTYPE html>
       const names = [...selected];
       if (!names.length) return;
       modalText.textContent = remoteUrl
-        ? `Se eliminarán ${names.length} elemento(s) de la copia local (archivos y/o carpetas).`
-        : `Se eliminarán ${names.length} elemento(s) del storage local (archivos y/o carpetas).`;
+        ? `Se eliminarán ${names.length} elemento(s) del sitio EN VIVO (el dominio cambiará de verdad).`
+        : `Se eliminarán ${names.length} elemento(s) del storage local.`;
       modalList.innerHTML = names.map((name) => escapeHtml(name)).join("<br>");
       modal.hidden = false;
       btnConfirm.focus();
@@ -780,6 +769,7 @@ PAGE = r"""<!DOCTYPE html>
     });
 
     apiUrlInput.value = remoteUrl;
+    apiTokenInput.value = remoteToken;
     loadFiles();
   </script>
 </body>
