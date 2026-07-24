@@ -42,7 +42,7 @@ PAGE = r"""<!DOCTYPE html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>OAL File Control</title>
+  <title>File Clear</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
@@ -61,6 +61,7 @@ PAGE = r"""<!DOCTYPE html>
       --ok: #7dba8e;
       --warn: #d2b15a;
       --focus: rgba(196, 165, 116, 0.35);
+      --space: 1.25rem;
     }
     * { box-sizing: border-box; }
     body {
@@ -73,9 +74,9 @@ PAGE = r"""<!DOCTYPE html>
       min-height: 100vh;
     }
     .frame {
-      width: min(860px, 94vw);
+      width: min(880px, 92vw);
       margin: 0 auto;
-      padding: 2.5rem 0 3rem;
+      padding: 3.25rem 0 4rem;
       animation: enter 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
     }
     @keyframes enter {
@@ -90,8 +91,8 @@ PAGE = r"""<!DOCTYPE html>
     .brand-mark {
       display: inline-flex;
       align-items: center;
-      gap: 0.55rem;
-      margin-bottom: 0.85rem;
+      gap: 0.7rem;
+      margin-bottom: 1.15rem;
       color: var(--accent);
       font-size: 0.75rem;
       font-weight: 600;
@@ -100,32 +101,33 @@ PAGE = r"""<!DOCTYPE html>
     }
     .brand-mark::before {
       content: "";
-      width: 1.4rem;
+      width: 1.6rem;
       height: 1px;
       background: var(--accent);
     }
     .brand {
       margin: 0;
       font-family: "Instrument Serif", serif;
-      font-size: clamp(2.5rem, 7vw, 3.6rem);
+      font-size: clamp(2.8rem, 8vw, 4rem);
       font-weight: 400;
       letter-spacing: -0.03em;
       line-height: 0.95;
     }
     .brand em { font-style: italic; color: var(--accent); }
     .lede {
-      margin: 0.85rem 0 1.4rem;
-      max-width: 46ch;
+      margin: 1.15rem 0 2rem;
+      max-width: 48ch;
       color: var(--muted);
-      line-height: 1.5;
+      line-height: 1.6;
+      font-size: 1.02rem;
     }
     .connect {
       display: grid;
-      gap: 0.65rem;
-      margin-bottom: 1rem;
-      padding: 1rem;
+      gap: 1rem;
+      margin-bottom: 1.75rem;
+      padding: 1.45rem 1.4rem 1.35rem;
       border: 1px solid var(--line);
-      border-radius: 4px;
+      border-radius: 6px;
       background: rgba(0,0,0,0.18);
     }
     .connect label {
@@ -134,20 +136,21 @@ PAGE = r"""<!DOCTYPE html>
       text-transform: uppercase;
       color: var(--muted);
       font-weight: 600;
+      margin-bottom: 0.15rem;
     }
     .connect-row {
       display: grid;
       grid-template-columns: 1fr auto auto;
-      gap: 0.5rem;
+      gap: 0.75rem;
     }
     .connect input {
       width: 100%;
       border: 1px solid var(--line-strong);
-      border-radius: 3px;
+      border-radius: 4px;
       background: rgba(255,255,255,0.03);
       color: var(--text);
-      padding: 0.75rem 0.85rem;
-      font: 500 0.92rem "Instrument Sans", sans-serif;
+      padding: 0.95rem 1rem;
+      font: 500 0.95rem "Instrument Sans", sans-serif;
     }
     .connect input:focus {
       outline: none;
@@ -155,41 +158,42 @@ PAGE = r"""<!DOCTYPE html>
       box-shadow: 0 0 0 3px var(--focus);
     }
     .hint {
-      margin: 0;
+      margin: 0.35rem 0 0;
       color: var(--muted);
-      font-size: 0.82rem;
-      line-height: 1.4;
+      font-size: 0.84rem;
+      line-height: 1.55;
     }
     .hint a { color: var(--accent); }
     .panel {
       border: 1px solid var(--line);
-      border-radius: 4px;
+      border-radius: 6px;
       background: linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.01));
       overflow: hidden;
     }
     .panel-head, .panel-foot {
       display: flex;
       flex-wrap: wrap;
-      gap: 0.75rem;
+      gap: 1rem;
       align-items: center;
       justify-content: space-between;
-      padding: 0.95rem 1.1rem;
+      padding: 1.25rem 1.4rem;
       border-color: var(--line);
       background: rgba(0,0,0,0.16);
     }
     .panel-head { border-bottom: 1px solid var(--line); }
     .panel-foot { border-top: 1px solid var(--line); }
-    .meta { color: var(--muted); font-size: 0.86rem; line-height: 1.4; }
+    .meta { color: var(--muted); font-size: 0.9rem; line-height: 1.5; }
     .meta strong { color: var(--text); }
-    .path { display: block; margin-top: 0.2rem; font-size: 0.76rem; color: rgba(154,163,178,0.8); word-break: break-all; }
-    .tools, .crumbs { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+    .path { display: block; margin-top: 0.35rem; font-size: 0.78rem; color: rgba(154,163,178,0.8); word-break: break-all; }
+    .tools, .crumbs { display: flex; flex-wrap: wrap; gap: 0.55rem; }
+    .crumbs { margin-top: 0.85rem; }
     .tool, .crumb {
       border: 1px solid var(--line);
       background: transparent;
       color: var(--muted);
-      border-radius: 3px;
-      padding: 0.4rem 0.7rem;
-      font: 500 0.8rem "Instrument Sans", sans-serif;
+      border-radius: 4px;
+      padding: 0.55rem 0.85rem;
+      font: 500 0.82rem "Instrument Sans", sans-serif;
       cursor: pointer;
     }
     .tool:hover, .crumb:hover {
@@ -202,63 +206,44 @@ PAGE = r"""<!DOCTYPE html>
       border-color: rgba(196,165,116,0.35);
     }
     .file-list {
-      max-height: min(52vh, 480px);
+      max-height: min(54vh, 520px);
       overflow: auto;
+      padding: 0.35rem 0;
       scrollbar-width: thin;
       scrollbar-color: rgba(196,165,116,0.35) transparent;
     }
     .row {
       display: grid;
       grid-template-columns: auto 1fr auto;
-      gap: 0.85rem;
+      gap: 1rem;
       align-items: center;
-      padding: 0.9rem 1.1rem;
-      border-bottom: 1px solid var(--line);
-      transition: background 0.18s;
+      padding: 1.15rem 1.4rem;
+      margin: 0.35rem 0.7rem;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      transition: background 0.18s, border-color 0.18s;
       animation: enter 0.4s ease both;
     }
-    .row:last-child { border-bottom: 0; }
+    .row:hover { background: rgba(255,255,255,0.03); border-color: var(--line); }
     .row.file { cursor: pointer; }
-    .row.file:hover { background: rgba(255,255,255,0.025); }
     .row.file.is-selected {
-      background: rgba(196,165,116,0.07);
+      background: rgba(196,165,116,0.08);
+      border-color: rgba(196,165,116,0.28);
       box-shadow: inset 3px 0 0 var(--accent);
     }
     .row.folder { cursor: default; }
     .row.folder:hover { background: rgba(255,255,255,0.03); }
     .row.folder.is-selected {
-      background: rgba(196,165,116,0.07);
+      background: rgba(196,165,116,0.08);
+      border-color: rgba(196,165,116,0.28);
       box-shadow: inset 3px 0 0 var(--accent);
-    }
-    .open-btn {
-      border: 1px solid var(--line);
-      background: transparent;
-      color: var(--text);
-      border-radius: 3px;
-      padding: 0.35rem 0.65rem;
-      font: 600 0.78rem "Instrument Sans", sans-serif;
-      cursor: pointer;
-      white-space: nowrap;
-    }
-    .open-btn:hover {
-      border-color: rgba(196,165,116,0.45);
-      color: var(--accent);
-    }
-    .folder-actions {
-      display: flex;
-      align-items: center;
-      gap: 0.45rem;
-    }
-    .tool:disabled {
-      opacity: 0.35;
-      cursor: not-allowed;
     }
     .row.is-protected { opacity: 0.48; cursor: not-allowed; }
     .check {
-      width: 1.05rem;
-      height: 1.05rem;
+      width: 1.15rem;
+      height: 1.15rem;
       border: 1.5px solid rgba(154,163,178,0.55);
-      border-radius: 2px;
+      border-radius: 3px;
       display: grid;
       place-items: center;
     }
@@ -275,15 +260,31 @@ PAGE = r"""<!DOCTYPE html>
       transition: 0.12s;
     }
     .row.is-selected .check svg { opacity: 1; transform: scale(1); }
-    .folder-icon {
-      width: 1.05rem;
-      height: 1.05rem;
-      border-radius: 2px;
-      background: linear-gradient(135deg, rgba(196,165,116,0.35), rgba(196,165,116,0.08));
-      border: 1px solid rgba(196,165,116,0.35);
+    .open-btn {
+      border: 1px solid var(--line);
+      background: transparent;
+      color: var(--text);
+      border-radius: 4px;
+      padding: 0.45rem 0.8rem;
+      font: 600 0.8rem "Instrument Sans", sans-serif;
+      cursor: pointer;
+      white-space: nowrap;
     }
-    .name { font-weight: 600; letter-spacing: -0.015em; word-break: break-all; }
-    .sub { margin-top: 0.15rem; color: var(--muted); font-size: 0.8rem; }
+    .open-btn:hover {
+      border-color: rgba(196,165,116,0.45);
+      color: var(--accent);
+    }
+    .folder-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+    }
+    .tool:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+    .name { font-weight: 600; letter-spacing: -0.015em; word-break: break-all; font-size: 0.98rem; }
+    .sub { margin-top: 0.3rem; color: var(--muted); font-size: 0.82rem; line-height: 1.4; }
     .ext {
       font-size: 0.68rem;
       font-weight: 600;
@@ -291,16 +292,16 @@ PAGE = r"""<!DOCTYPE html>
       text-transform: uppercase;
       color: var(--muted);
       border: 1px solid var(--line);
-      border-radius: 2px;
-      padding: 0.28rem 0.45rem;
+      border-radius: 3px;
+      padding: 0.35rem 0.5rem;
       white-space: nowrap;
     }
     .ext.lock { color: var(--accent); border-color: rgba(196,165,116,0.35); }
     .ext.dir { color: #9ec0ff; border-color: rgba(158,192,255,0.3); }
     .primary, .secondary {
-      border-radius: 3px;
-      padding: 0.78rem 1.05rem;
-      font: 650 0.9rem "Instrument Sans", sans-serif;
+      border-radius: 4px;
+      padding: 0.9rem 1.15rem;
+      font: 650 0.92rem "Instrument Sans", sans-serif;
       cursor: pointer;
     }
     .primary {
@@ -314,14 +315,14 @@ PAGE = r"""<!DOCTYPE html>
       background: transparent;
       color: var(--text);
     }
-    .status { min-height: 1.25rem; color: var(--muted); font-size: 0.86rem; }
+    .status { min-height: 1.25rem; color: var(--muted); font-size: 0.88rem; }
     .status.ok { color: var(--ok); }
     .status.warn { color: var(--warn); }
     .status.err { color: var(--danger); }
-    .empty { padding: 2.2rem 1rem; text-align: center; color: var(--muted); }
+    .empty { padding: 2.8rem 1.4rem; text-align: center; color: var(--muted); }
     .modal-backdrop {
       position: fixed; inset: 0; z-index: 50;
-      display: grid; place-items: center; padding: 1rem;
+      display: grid; place-items: center; padding: 1.25rem;
       background: rgba(8,10,14,0.78);
       backdrop-filter: blur(10px);
       animation: fade 0.2s ease both;
@@ -330,43 +331,46 @@ PAGE = r"""<!DOCTYPE html>
     .modal {
       width: min(460px, 100%);
       border: 1px solid rgba(217,92,92,0.28);
-      border-radius: 4px;
+      border-radius: 6px;
       background:
         radial-gradient(420px 160px at 0% 0%, var(--danger-bg), transparent 55%),
         linear-gradient(180deg, #1a1e27, #13161d);
-      padding: 1.35rem;
+      padding: 1.6rem;
       animation: modalIn 0.22s ease both;
     }
     .modal h2 {
-      margin: 0 0 0.4rem;
+      margin: 0 0 0.55rem;
       font-family: "Instrument Serif", serif;
-      font-size: 1.5rem;
+      font-size: 1.55rem;
       font-weight: 400;
     }
-    .modal p { margin: 0 0 1rem; color: var(--muted); line-height: 1.45; }
+    .modal p { margin: 0 0 1.15rem; color: var(--muted); line-height: 1.5; }
     .modal-list {
-      margin: 0 0 1.15rem;
-      padding: 0.75rem 0.85rem;
+      margin: 0 0 1.35rem;
+      padding: 0.9rem 1rem;
       max-height: 170px;
       overflow: auto;
       border: 1px solid var(--line);
-      border-radius: 3px;
+      border-radius: 4px;
       background: rgba(0,0,0,0.25);
-      font-size: 0.88rem;
-      line-height: 1.55;
+      font-size: 0.9rem;
+      line-height: 1.6;
     }
-    .modal-actions { display: flex; justify-content: flex-end; gap: 0.55rem; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 0.7rem; }
     .btn-cancel, .btn-danger {
-      border-radius: 3px;
-      padding: 0.7rem 1rem;
-      font: 600 0.88rem "Instrument Sans", sans-serif;
+      border-radius: 4px;
+      padding: 0.8rem 1.1rem;
+      font: 600 0.9rem "Instrument Sans", sans-serif;
       cursor: pointer;
     }
     .btn-cancel { border: 1px solid var(--line-strong); background: transparent; color: var(--text); }
     .btn-danger { border: 0; background: linear-gradient(180deg, #e07070, #c24a4a); color: #fff; }
     @media (max-width: 720px) {
+      .frame { padding: 2.25rem 0 3rem; }
+      .connect { padding: 1.2rem; gap: 0.85rem; }
       .connect-row { grid-template-columns: 1fr; }
       .panel-head, .panel-foot { flex-direction: column; align-items: stretch; }
+      .row { margin: 0.25rem 0.45rem; padding: 1rem; }
       .primary { width: 100%; }
     }
   </style>
@@ -374,7 +378,7 @@ PAGE = r"""<!DOCTYPE html>
 <body>
   <div class="frame">
     <div class="brand-mark">Panel central</div>
-    <h1 class="brand">OAL <em>File Control</em></h1>
+    <h1 class="brand">File <em>Clear</em></h1>
     <p class="lede">Pega una URL externa (por ejemplo un sitio en ngrok con <code>oal_agent.php</code>) y limpia basura navegando carpetas y archivos.</p>
 
     <section class="connect">
@@ -612,7 +616,7 @@ PAGE = r"""<!DOCTYPE html>
           `<span class="path">${escapeHtml(data.folder || data.root || remoteUrl || "")}</span>`;
         renderCrumbs(data.breadcrumb || []);
         renderList();
-        setStatus(remoteUrl ? `Conectado a ${remoteUrl}` : "Storage local de OAL", "ok");
+        setStatus(remoteUrl ? `Conectado a ${remoteUrl}` : "Storage local de File Clear", "ok");
       } catch (err) {
         folders = [];
         files = [];
@@ -855,7 +859,7 @@ def main() -> None:
     server = ThreadingHTTPServer((HOST, PORT), AppHandler)
     display_host = "127.0.0.1" if HOST == "0.0.0.0" else HOST
     url = f"http://{display_host}:{PORT}/"
-    print("OAL File Control")
+    print("File Clear")
     print(f"  Escuchando: {HOST}:{PORT}")
     print(f"  Local: {url}")
     print(f"  Público: {PUBLIC_URL}")
