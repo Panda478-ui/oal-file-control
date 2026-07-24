@@ -1,15 +1,15 @@
-"""Listado y eliminación segura de archivos del proyecto."""
+"""Listado y eliminación segura de archivos y carpetas."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, List, Optional
 
-# Núcleo de la aplicación: no se puede eliminar desde la interfaz
-PROTECTED_FILES = {
+PROTECTED_NAMES = {
     "app.py",
     "delete_files.py",
     "iniciar.bat",
+    "iniciar-tunel.bat",
     "render.yaml",
     "requirements.txt",
     ".gitignore",
@@ -30,22 +30,72 @@ def _human_size(num_bytes: int) -> str:
     return f"{num_bytes} B"
 
 
-def list_project_files(base_dir: Optional[Path] = None) -> dict:
-    """Lista todos los archivos del directorio del proyecto."""
+def _normalize_rel(rel_path: str) -> str:
+    raw = (rel_path or "").replace("\\", "/").strip().strip("/")
+    if not raw:
+        return ""
+    parts: List[str] = []
+    for part in raw.split("/"):
+        if not part or part == ".":
+            continue
+        if part == ".." or part in SKIP_NAMES:
+            raise ValueError("Ruta no permitida")
+        parts.append(part)
+    return "/".join(parts)
+
+
+def resolve_workdir(base_dir: Path, rel_path: str = "") -> Path:
+    """Devuelve un directorio dentro de base_dir a partir de una ruta relativa."""
+    base = base_dir.resolve()
+    rel = _normalize_rel(rel_path)
+    target = (base / rel).resolve() if rel else base
+    try:
+        target.relative_to(base)
+    except ValueError as exc:
+        raise ValueError("Ruta fuera del directorio permitido") from exc
+    if not target.exists():
+        raise FileNotFoundError("La carpeta no existe")
+    if not target.is_dir():
+        raise ValueError("La ruta no es una carpeta")
+    return target
+
+
+def list_project_files(base_dir: Optional[Path] = None, rel_path: str = "") -> dict:
+    """Lista carpetas y archivos dentro de una ruta relativa al root."""
     base = (base_dir or Path(__file__).resolve().parent).resolve()
+    work = resolve_workdir(base, rel_path)
+    rel = _normalize_rel(rel_path)
+
+    folders = []
     files = []
 
-    for path in sorted(base.iterdir(), key=lambda p: p.name.lower()):
-        if path.name in SKIP_NAMES or path.is_dir():
+    entries = sorted(work.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+    for path in entries:
+        if path.name in SKIP_NAMES:
             continue
+
+        if path.is_dir():
+            folders.append(
+                {
+                    "name": path.name,
+                    "type": "folder",
+                    "path": f"{rel}/{path.name}".strip("/"),
+                    "protected": False,
+                }
+            )
+            continue
+
         if not path.is_file():
             continue
 
-        protected = path.name in PROTECTED_FILES
+        # Solo proteger nombres del núcleo en la raíz del almacenamiento
+        protected = path.name in PROTECTED_NAMES and rel == ""
         ext = path.suffix.lower()
         files.append(
             {
                 "name": path.name,
+                "type": "file",
+                "path": f"{rel}/{path.name}".strip("/"),
                 "size": path.stat().st_size,
                 "size_label": _human_size(path.stat().st_size),
                 "ext": ext.lstrip(".") or "sin extensión",
@@ -56,58 +106,111 @@ def list_project_files(base_dir: Optional[Path] = None) -> dict:
 
     reclaimable = [item for item in files if not item["protected"]]
     total_bytes = sum(item["size"] for item in reclaimable)
+    crumbs = [{"name": "Inicio", "path": ""}]
+    if rel:
+        built = []
+        for part in rel.split("/"):
+            built.append(part)
+            crumbs.append({"name": part, "path": "/".join(built)})
+
+    parent = "/".join(rel.split("/")[:-1]) if rel else None
+
     return {
-        "folder": str(base),
-        "count": len(files),
+        "root": str(base),
+        "folder": str(work),
+        "path": rel,
+        "parent": parent,
+        "breadcrumb": crumbs,
+        "count": len(files) + len(folders),
+        "folder_count": len(folders),
+        "file_count": len(files),
         "deletable_count": len(reclaimable),
         "reclaimable_label": _human_size(total_bytes),
+        "folders": folders,
         "files": files,
     }
 
 
-def _safe_resolve(base: Path, name: str) -> Optional[Path]:
-    """Resuelve un nombre solo si permanece dentro del directorio base."""
-    if not name or name != Path(name).name:
-        return None
-    if name in PROTECTED_FILES or name in SKIP_NAMES:
-        return None
-
-    candidate = (base / name).resolve()
+def _safe_file(base: Path, rel_file: str) -> Optional[Path]:
     try:
-        candidate.relative_to(base)
+        rel = _normalize_rel(rel_file)
     except ValueError:
         return None
+    if not rel:
+        return None
 
+    name = Path(rel).name
+    parent_rel = str(Path(rel).parent).replace("\\", "/")
+    if parent_rel == ".":
+        parent_rel = ""
+
+    if name in PROTECTED_NAMES and parent_rel == "":
+        return None
+    if name in SKIP_NAMES:
+        return None
+
+    candidate = (base / rel).resolve()
+    try:
+        candidate.relative_to(base.resolve())
+    except ValueError:
+        return None
     return candidate if candidate.is_file() else None
 
 
 def delete_selected_files(
     names: Iterable[str],
     base_dir: Optional[Path] = None,
+    current_path: str = "",
 ) -> dict:
-    """Elimina cualquier archivo seleccionado que no esté protegido."""
+    """
+    Elimina archivos.
+    Acepta nombres simples (relativos a current_path) o rutas relativas al root.
+    """
     base = (base_dir or Path(__file__).resolve().parent).resolve()
+    prefix = _normalize_rel(current_path)
     deleted = []
     missing = []
     blocked = []
     freed = 0
 
     for raw in names:
-        name = str(raw).strip()
+        name = str(raw).strip().replace("\\", "/")
         if not name:
             continue
-        if name in PROTECTED_FILES:
-            blocked.append(name)
+
+        if "/" in name:
+            rel = name
+        else:
+            rel = f"{prefix}/{name}".strip("/")
+
+        try:
+            pure_name = Path(_normalize_rel(rel)).name
+        except ValueError:
+            missing.append(name)
             continue
 
-        path = _safe_resolve(base, name)
+        if pure_name in PROTECTED_NAMES and ("/" not in rel or rel == pure_name):
+            # protegido solo si está en la raíz
+            if "/" not in _normalize_rel(rel):
+                blocked.append(name)
+                continue
+
+        path = _safe_file(base, rel)
         if path is None:
-            missing.append(name)
+            # distinguir protegido vs missing
+            try:
+                check = (base / _normalize_rel(rel)).resolve()
+                if check.is_file() and check.name in PROTECTED_NAMES:
+                    blocked.append(name)
+                else:
+                    missing.append(name)
+            except Exception:
+                missing.append(name)
             continue
 
         size = path.stat().st_size
         path.unlink()
-        deleted.append(name)
+        deleted.append(path.name)
         freed += size
 
     if deleted and not missing and not blocked:
@@ -145,7 +248,9 @@ def delete_target_files(base_dir: Optional[Path] = None) -> dict:
 
 if __name__ == "__main__":
     listing = list_project_files()
-    print(f"Carpeta: {listing['folder']}")
+    print(f"Root: {listing['root']}")
+    for folder in listing["folders"]:
+        print(f"  [dir] {folder['name']}")
     for item in listing["files"]:
         flag = " [protegido]" if item["protected"] else ""
         print(f"  - {item['name']} ({item['size_label']}){flag}")
